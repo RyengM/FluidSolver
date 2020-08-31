@@ -1,0 +1,10 @@
+#version 430 core
+
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(binding = 0, rgba32f) uniform image2D rayDir;
+
+void main()
+{
+	vec2 output_img = vec2(gl_GlobalInvocationID.xy) / vec2(gl_WorkGroupSize.xy * gl_NumWorkGroups.xy) - 0.5;
+	imageStore(rayDir, ivec2(gl_GlobalInvocationID.xy), vec4(output_img, 0, 1));
+}
