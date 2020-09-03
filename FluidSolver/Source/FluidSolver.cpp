@@ -13,9 +13,9 @@
 #include <Solver.h>
 #include <memory>
 
-#define Nx 128
-#define Ny 128
-#define Nz 256
+#define Nx 60
+#define Ny 60
+#define Nz 128
 
 void framebuffer_size_callback(GLFWwindow* window, int width, int height);
 void mouse_callback(GLFWwindow* window, double xpos, double ypos);
@@ -23,8 +23,8 @@ void scroll_callback(GLFWwindow* window, double xoffset, double yoffset);
 void ProcessInput(GLFWwindow *window);
 
 // camera
-glm::vec3 cameraPos = glm::vec3(0.0f, 0.0f, 3.0f);
-glm::vec3 cameraFront = glm::vec3(0.0f, 0.0f, -1.0f);
+glm::vec3 cameraPos = glm::vec3(-2.0f, 0.0f, 0.0f);
+glm::vec3 cameraFront = glm::vec3(1.0f, 0.0f, 0.0f);
 glm::vec3 cameraUp = glm::vec3(0.0f, 1.0f, 0.0f);
 
 bool firstMouse = true;
@@ -108,7 +108,7 @@ void FluidSolver::Render()
 	glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, 0, NULL);
 
 	// fetch data from cu solver
-	Solver solver = Solver(Nx, Ny, Nz, 0.05f, 30, 0.02f, 0.f, 0.f, 10.f);
+	Solver solver = Solver(Nx, Ny, Nz, 0.05f, 30, 0.03f, 0.2f, 0.f, 0.f, 20.f);
 	solver.Initialize();
 	solver.Update();
 	// result to stack corruption, but data is right, ignore it now
@@ -135,7 +135,7 @@ void FluidSolver::Render()
 		deltaTime = currentFrame - lastFrame;
 		lastFrame = currentFrame;
 
-		//std::cout << "fps:" << 1 / deltaTime << std::endl;
+		std::cout << "fps:" << 1.f / deltaTime << std::endl;
 
 		ProcessInput(window);
 
