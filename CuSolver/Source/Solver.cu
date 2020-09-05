@@ -162,6 +162,16 @@ void swap(float** a, float** b)
 	*b = temp;
 }
 
+static __global__ void CopyFrom(float* dst, float* src)
+{
+	size_t i = threadIdx.x;
+	size_t j = blockIdx.x;
+	size_t k = blockIdx.y;
+	size_t ind = i + j * blockDim.x + k * blockDim.x * gridDim.x;
+
+	dst[ind] = src[ind];
+}
+
 static __global__ void SourceKernel(float* rho, float* ux, float* uy, float* uz, float rho0, float3 u0)
 {
 	size_t i = threadIdx.x;
@@ -339,16 +349,16 @@ static __global__ void ForceKernel(float* f_ux, float* f_uy, float* f_uz, float*
 }
 
 // -Ax = -b, r0 = -b = -¨Œ¡¤u, p0 = r0
-static __global__ void InitConjugate(float* residual, float* p, float* f_div, float* f_pressure)
+static __global__ void InitConjugate(float* r, float* p, float* f_div, float* x)
 {
 	size_t i = threadIdx.x;
 	size_t j = blockIdx.x;
 	size_t k = blockIdx.y;
 	size_t ind = i + j * blockDim.x + k * blockDim.x * gridDim.x;
 
-	residual[ind] = f_div[ind];
+	r[ind] = f_div[ind];
 	p[ind] = f_div[ind];
-	f_pressure[ind] = 0;
+	x[ind] = 0;
 }
 
 // p here is conjugate gradient, not pressure
@@ -370,51 +380,78 @@ static __global__ void ComputeAp(float* Ap, float* p, int3 max_pos)
 	Ap[ind] = -6.f * pc + pl + pr + pbh + pf + pbo + pt;
 }
 
-static __global__ void UpdateResidual(float* residual, float* new_residual, float* p, float* Ap, float* f_pressure, float alpha)
+static __global__ void UpdateResidual(float* r, float* p, float* Ap, float* x, float alpha)
 {
 	size_t i = threadIdx.x;
 	size_t j = blockIdx.x;
 	size_t k = blockIdx.y;
 	size_t ind = i + j * blockDim.x + k * blockDim.x * gridDim.x;
 
-	f_pressure[ind] += alpha * p[ind];
-	new_residual[ind] = residual[ind] - alpha * Ap[ind];
+	x[ind] += alpha * p[ind];
+	r[ind] -= alpha * Ap[ind];
 }
 
-static __global__ void UpdateP(float* p, float* new_residual, float beta)
+static __global__ void UpdateP(float* p, float* r, float beta)
 {
 	size_t i = threadIdx.x;
 	size_t j = blockIdx.x;
 	size_t k = blockIdx.y;
 	size_t ind = i + j * blockDim.x + k * blockDim.x * gridDim.x;
 
-	p[ind] = new_residual[ind] + beta * p[ind];
+	p[ind] = r[ind] + beta * p[ind];
 }
 
-static __global__ void Conjugate(float* residual, float* new_residual, float* p, float* Ap, float* f_pressure, float* f_div, int3 max_pos)
+static __global__ void Restrict()
+{
+
+}
+
+static __global__ void Prolongage()
+{
+
+}
+
+static __global__ void Smooth(float* r, float* z, bool phase)
+{
+
+}
+
+// multi grid preconditioner, to make M^-1Ax = M^-1b which has a smaller condition number in order to accelerate rate of convergence
+static __global__ void MG_Preconditioner()
+{
+
+}
+
+static __global__ void Conjugate(float* r, float* z, float* p, float* Ap, float* x, float* f_div, int3 max_pos)
 {
 	int nx = max_pos.x, ny = max_pos.y, nz = max_pos.z;
-	InitConjugate << <dim3(ny, nz), nx >> > (residual, p, f_div, f_pressure);
+	InitConjugate << <dim3(ny, nz), nx >> > (r, p, f_div, x);
 
-	float init_rTr = aTb(residual, residual, max_pos);
+	float init_rTr = aTb(r, r, max_pos);
+	
+	CopyFrom << <dim3(ny, nz), nx >> > (z, r);
+	float old_zTr = aTb(r, r, max_pos);
 
 	for (int i = 0; i < 40; ++i)
 	{
 		// ¦Á(k) = r(k)Tr(k) / p(k)TAp(k)
-		float alpha = aTb(residual, residual, max_pos);
 		ComputeAp << <dim3(ny, nz), nx >> > (Ap, p, max_pos);
-		alpha /= aTb(p, Ap, max_pos);
+		float alpha = old_zTr / aTb(p, Ap, max_pos);
 		// x(k+1) = x(k) + ¦Á(k)p(k), r(k+1) = r(k) - ¦Á(k)Ap(k)
-		UpdateResidual << <dim3(ny, nz), nx >> > (residual, new_residual, p, Ap, f_pressure, alpha);
+		UpdateResidual << <dim3(ny, nz), nx >> > (r, p, Ap, x, alpha);
 		// if ||r(k+1)|| is sufficient enough small, break
-		printf("%d  %f  %f \n", i, aTb(new_residual, new_residual, max_pos));
-		if (aTb(new_residual, new_residual, max_pos) < init_rTr * 1e-5)
+		printf("iter%d:  %f\n", i, aTb(r, r, max_pos));
+		if (aTb(r, r, max_pos) < init_rTr * 1e-5)
 			break;
+		CopyFrom << <dim3(ny, nz), nx >> > (z, r);
 		// ¦Â(k) = r(k+1)Tr(k+1)/r(k)Tr(k)
-		float beta = aTb(new_residual, new_residual, max_pos) / aTb(residual, residual, max_pos);
+		float new_zTr = aTb(r, r, max_pos);
+		float beta = new_zTr / old_zTr;
 		// p(k+1) = r(k+1) + ¦Â(k)p(k)
-		UpdateP << <dim3(ny, nz), nx >> > (p, new_residual, beta);
-		device_swap(&residual, &new_residual);
+		UpdateP << <dim3(ny, nz), nx >> > (p, r, beta);
+		cudaDeviceSynchronize();
+		//printf("p: %f\n", aTb(p, p, max_pos));
+		old_zTr = new_zTr;
 	}
 }
 
@@ -434,10 +471,11 @@ void Solver::InitCuda()
 	checkCudaErrors(cudaMalloc((void**)&f_vortx, nx * ny * nz * sizeof(float)));
 	checkCudaErrors(cudaMalloc((void**)&f_vorty, nx * ny * nz * sizeof(float)));
 	checkCudaErrors(cudaMalloc((void**)&f_vortz, nx * ny * nz * sizeof(float)));
-	checkCudaErrors(cudaMalloc((void**)&residual, nx * ny * nz * sizeof(float)));
-	checkCudaErrors(cudaMalloc((void**)&new_residual, nx * ny * nz * sizeof(float)));
+	checkCudaErrors(cudaMalloc((void**)&r, nx * ny * nz * sizeof(float)));
+	checkCudaErrors(cudaMalloc((void**)&z, nx * ny * nz * sizeof(float)));
 	checkCudaErrors(cudaMalloc((void**)&p, nx * ny * nz * sizeof(float)));
 	checkCudaErrors(cudaMalloc((void**)&Ap, nx * ny * nz * sizeof(float)));
+	checkCudaErrors(cudaMalloc((void**)&x, nx * ny * nz * sizeof(float)));
 
 	checkCudaErrors(cudaMemset(f_ux, 0, nx * ny * nz * sizeof(float)));
 	checkCudaErrors(cudaMemset(f_uy, 0, nx * ny * nz * sizeof(float)));
@@ -453,10 +491,11 @@ void Solver::InitCuda()
 	checkCudaErrors(cudaMemset(f_vortx, 0, nx * ny * nz * sizeof(float)));
 	checkCudaErrors(cudaMemset(f_vorty, 0, nx * ny * nz * sizeof(float)));
 	checkCudaErrors(cudaMemset(f_vortz, 0, nx * ny * nz * sizeof(float)));
-	checkCudaErrors(cudaMemset(residual, 0, nx * ny * nz * sizeof(float)));
-	checkCudaErrors(cudaMemset(new_residual, 0, nx * ny * nz * sizeof(float)));
+	checkCudaErrors(cudaMemset(r, 0, nx * ny * nz * sizeof(float)));
+	checkCudaErrors(cudaMemset(z, 0, nx * ny * nz * sizeof(float)));
 	checkCudaErrors(cudaMemset(p, 0, nx * ny * nz * sizeof(float)));
 	checkCudaErrors(cudaMemset(Ap, 0, nx * ny * nz * sizeof(float)));
+	checkCudaErrors(cudaMemset(x, 0, nx * ny * nz * sizeof(float)));
 }
 
 void Solver::FreeCuda()
@@ -475,10 +514,11 @@ void Solver::FreeCuda()
 	checkCudaErrors(cudaFree(f_vortx));
 	checkCudaErrors(cudaFree(f_vorty));
 	checkCudaErrors(cudaFree(f_vortz));
-	checkCudaErrors(cudaFree(residual));
-	checkCudaErrors(cudaFree(new_residual));
+	checkCudaErrors(cudaFree(r));
+	checkCudaErrors(cudaFree(z));
 	checkCudaErrors(cudaFree(p));
 	checkCudaErrors(cudaFree(Ap));
+	checkCudaErrors(cudaFree(x));
 }
 
 void Solver::UpdateCuda()
@@ -518,7 +558,8 @@ void Solver::UpdateCuda()
 		swap(&f_pressure, &f_new_pressure);
 	}
 #else
-	Conjugate << <dim3(1, 1), 1 >> > (residual, new_residual, p, Ap, f_pressure, f_div, max_pos);
+	Conjugate << <dim3(1, 1), 1 >> > (r, z, p, Ap, x, f_div, max_pos);
+	CopyFrom << <dim3(ny, nz), nx >> > (f_pressure, x);
 #endif
 	// update velocity
 	ApplyGradient << <dim3(ny, nz), nx >> > (f_ux, f_uy, f_uz, f_pressure, max_pos);
@@ -532,7 +573,9 @@ void Solver::Initialize()
 
 void Solver::Update()
 {
+	printf("frame: %d\n", current_frame);
 	UpdateCuda();
+	current_frame++;
 }
 
 Solver::~Solver()

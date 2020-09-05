@@ -41,6 +41,8 @@ private:
 	float vel_x = 0;
 	float vel_y = 0;
 	float vel_z = 0;
+	// frame
+	int current_frame = 0;
 
 private:
 	// Device
@@ -64,11 +66,11 @@ private:
 	float* f_vorty;
 	float* f_vortz;
 	// conjugae variables
-	float* residual;	// residual
-	float* new_residual;
+	float* r;			// residual
+	float* z;			// M^-1 r
 	float* p;			// conjugate gradient
 	float* Ap;			// matrix-vector product
-	//float* x;			// solution
+	float* x;			// solution
 
 private:
 	// Host
