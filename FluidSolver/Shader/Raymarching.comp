@@ -22,7 +22,7 @@ Ray CreateRay(vec3 pos, vec3 dir)
 {
 	Ray ray;
 	ray.pos = pos;
-	ray.dir = dir;
+	ray.dir = dir + 1e-16;
 	return ray;
 }
 

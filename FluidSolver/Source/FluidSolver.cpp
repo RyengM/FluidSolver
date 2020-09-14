@@ -13,9 +13,9 @@
 #include <Solver.h>
 #include <memory>
 
-#define Nx 60
-#define Ny 60
-#define Nz 128
+#define Nx 64
+#define Ny 64
+#define Nz 256
 
 void framebuffer_size_callback(GLFWwindow* window, int width, int height);
 void mouse_callback(GLFWwindow* window, double xpos, double ypos);
@@ -108,7 +108,7 @@ void FluidSolver::Render()
 	glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, 0, NULL);
 
 	// fetch data from cu solver
-	Solver solver = Solver(Nx, Ny, Nz, 0.05f, 30, 0.03f, 0.2f, 0.f, 0.f, 20.f);
+	Solver solver = Solver(Nx, Ny, Nz, 0.05f, 30, 0.02f, 0.4f, 0.f, 0.f, 20.f);
 	solver.Initialize();
 	solver.Update();
 	// result to stack corruption, but data is right, ignore it now

@@ -18,6 +18,11 @@ public:
 
 	void Update();
 
+	void Conjugate();
+
+	// multi grid preconditioner, to make M^-1Ax = M^-1b which has a smaller condition number in order to accelerate rate of convergence
+	void MG_Preconditioner();
+
 	float* GetDensityField();
 
 private:
@@ -66,13 +71,36 @@ private:
 	float* f_vorty;
 	float* f_vortz;
 	// conjugae variables
-	float* r;			// residual
-	float* z;			// M^-1 r
-	float* p;			// conjugate gradient
-	float* Ap;			// matrix-vector product
-	float* x;			// solution
+	float* r;						// residual
+	float* z;						// M^-1 r
+	float* new_z;					// M^-1 r, for red/black Gauss Seidel
+	float* p;						// conjugate gradient
+	float* Ap;						// matrix-vector product
+	float* x;						// solution
+	float* temp;					// temp array for accelerating aTb
+
+	// temp variable, used for data transfer from device to host, the length of the array is one
+	float* d_temp_res;
 
 private:
 	// Host
+	// density field
 	float* f_density;
+
+	int mg_level = 4;				// multi grid level
+	int mg_space = 0;				// space needed to be allocated for multi grid
+	int init_smooth_steps = 2;		// smooth steps for finest grid
+	int bottom_smooth_steps = 50;	// smooth steps for coarsest grid
+
+	// stride along search direction
+	float alpha = 0;
+	// stride for construct conjugate search direction
+	float beta = 0;
+
+	float init_rTr = 0;
+	float rTr = 0;
+	float last_rTr = 0;
+	float old_zTr = 0;
+	float new_zTr = 0;
+	float pAp = 0;
 };
