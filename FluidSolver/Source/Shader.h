@@ -1,8 +1,5 @@
 #pragma once
 
-#ifndef SHADER_H
-#define SHADER_H
-
 #include <glad/glad.h>
 #include <glm/glm.hpp>
 
@@ -120,4 +117,3 @@ private:
 	std::vector<unsigned int> vaoList;
 	std::vector<unsigned int> vboList;
 };
-#endif
