@@ -38,80 +38,72 @@ void FluidSolver::Render()
 
 	Shader shader;
 
-	//// declare frame buffer for first pass
-	//unsigned int fbo;
-	//glGenFramebuffers(1, &fbo);
-	//glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-	//// declare render target
-	//unsigned int renderTarget;
-	//glGenTextures(1, &renderTarget);
-	//glBindTexture(GL_TEXTURE_2D, renderTarget);
-	//glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, screenWidth, screenHeight, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
-	//glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-	//glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-	//glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, renderTarget, 0);
-	//// declare rbo for depth and stencil
-	//unsigned int rbo;
-	//glGenRenderbuffers(1, &rbo);
-	//glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, screenWidth, screenHeight);
-	//glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, rbo);
-	//if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
-	//	std::cout << "ERROR::FRAMEBUFFER:: Framebuffer is not complete!" << std::endl;
-	//glBindFramebuffer(GL_FRAMEBUFFER, 0);
+	// declare frame buffer for first pass
+	unsigned int fbo;
+	glGenFramebuffers(1, &fbo);
+	glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+	// declare render target and scene depth
+	unsigned int renderTarget;
+	glGenTextures(1, &renderTarget);
+	glBindTexture(GL_TEXTURE_2D, renderTarget);
+	glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA32F, screenWidth, screenHeight);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	unsigned int sceneDepth;
+	glGenTextures(1, &sceneDepth);
+	glBindTexture(GL_TEXTURE_2D, sceneDepth);
+	glTexStorage2D(GL_TEXTURE_2D, 1, GL_DEPTH24_STENCIL8, screenWidth, screenHeight);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, renderTarget, 0);
+	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, sceneDepth, 0);
 
 	// declare vs and ps for smoke boundingbox wireframe
-	//unsigned int boundingbox = shader.CreateProgram();
+	unsigned int boundingbox = shader.CreateProgram();
 
-	//unsigned int bbVert = shader.CreateVS("Shader/Boundingbox.vert");
-	//unsigned int bbFrag = shader.CreatePS("Shader/Boundingbox.frag");
-	//shader.Attach(boundingbox, bbVert);
-	//shader.Attach(boundingbox, bbFrag);
-	//shader.Link(boundingbox);
+	unsigned int bbVert = shader.CreateVS("Shader/Boundingbox.vert");
+	unsigned int bbFrag = shader.CreatePS("Shader/Boundingbox.frag");
+	shader.Attach(boundingbox, bbVert);
+	shader.Attach(boundingbox, bbFrag);
+	shader.Link(boundingbox);
 
-	//unsigned int bbVao, bbVbo;
-	//glGenVertexArrays(1, &bbVao);
-	//glBindVertexArray(bbVao);
-	//glEnableVertexAttribArray(0);
-	//glGenBuffers(1, &bbVbo);
-	//glBindBuffer(GL_ARRAY_BUFFER, bbVbo);
-	//shader.RecordVAO(bbVao);
-	//shader.RecordVBO(bbVbo);
-	//glm::vec3 bbPos = fluidObjects[0].pos;
-	//glm::vec3 bbOffset = fluidObjects[0].offset;
-	//static const float bbVerts[] =
-	//{
-	//	bbPos.x - bbOffset.x, bbPos.y - bbOffset.y, bbPos.z - bbOffset.z,
-	//	bbPos.x + bbOffset.x, bbPos.y - bbOffset.y, bbPos.z - bbOffset.z,
-	//	bbPos.x - bbOffset.x, bbPos.y + bbOffset.y, bbPos.z - bbOffset.z,
-	//	bbPos.x + bbOffset.x, bbPos.y + bbOffset.y, bbPos.z - bbOffset.z,
-	//	bbPos.x - bbOffset.x, bbPos.y - bbOffset.y, bbPos.z + bbOffset.z,
-	//	bbPos.x + bbOffset.x, bbPos.y - bbOffset.y, bbPos.z + bbOffset.z,
-	//	bbPos.x - bbOffset.x, bbPos.y + bbOffset.y, bbPos.z + bbOffset.z,
-	//	bbPos.x + bbOffset.x, bbPos.y + bbOffset.y, bbPos.z + bbOffset.z
-	//};
-	//glBufferData(GL_ARRAY_BUFFER, sizeof(bbVerts), bbVerts, GL_STATIC_DRAW);
-	//glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, NULL);
+	unsigned int bbVao, bbVbo;
+	glGenVertexArrays(1, &bbVao);
+	glBindVertexArray(bbVao);
+	glEnableVertexAttribArray(0);
+	glGenBuffers(1, &bbVbo);
+	glBindBuffer(GL_ARRAY_BUFFER, bbVbo);
+	shader.RecordVAO(bbVao);
+	shader.RecordVBO(bbVbo);
+	glm::vec3 bbPos = fluidObjects[0].pos;
+	glm::vec3 bbOffset = fluidObjects[0].offset;
+	static const float bbVerts[] =
+	{
+		bbPos.x - bbOffset.x, bbPos.y - bbOffset.y, bbPos.z - bbOffset.z,
+		bbPos.x + bbOffset.x, bbPos.y - bbOffset.y, bbPos.z - bbOffset.z,
+		bbPos.x + bbOffset.x, bbPos.y + bbOffset.y, bbPos.z - bbOffset.z,
+		bbPos.x - bbOffset.x, bbPos.y + bbOffset.y, bbPos.z - bbOffset.z,
+		bbPos.x - bbOffset.x, bbPos.y + bbOffset.y, bbPos.z + bbOffset.z,
+		bbPos.x - bbOffset.x, bbPos.y - bbOffset.y, bbPos.z + bbOffset.z,
+		bbPos.x + bbOffset.x, bbPos.y - bbOffset.y, bbPos.z + bbOffset.z,
+		bbPos.x + bbOffset.x, bbPos.y + bbOffset.y, bbPos.z + bbOffset.z,
+		bbPos.x - bbOffset.x, bbPos.y + bbOffset.y, bbPos.z + bbOffset.z,
+		bbPos.x - bbOffset.x, bbPos.y - bbOffset.y, bbPos.z + bbOffset.z,
 
-	// declare ray creation program
-	unsigned int createRay = shader.CreateProgram();
-	unsigned int createRayComp = shader.CreateCS("Shader/CreateRay.comp");
-	shader.Attach(createRay, createRayComp);
-	shader.Link(createRay);
+		bbPos.x - bbOffset.x, bbPos.y - bbOffset.y, bbPos.z - bbOffset.z,
+		bbPos.x - bbOffset.x, bbPos.y + bbOffset.y, bbPos.z - bbOffset.z,
 
-	// declare texture which saves our ray direction
-	unsigned int rayDir;
-	glGenTextures(1, &rayDir);
-	glBindTexture(GL_TEXTURE_2D, rayDir);
-	glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA32F, screenWidth, screenHeight);
-	glBindTexture(GL_TEXTURE_2D, 0);
+		bbPos.x - bbOffset.x, bbPos.y + bbOffset.y, bbPos.z + bbOffset.z,
+		bbPos.x + bbOffset.x, bbPos.y + bbOffset.y, bbPos.z + bbOffset.z,
 
-	// write ray direction to texture
-	shader.Use(createRay);
-	glBindImageTexture(0, rayDir, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F);
-	glDispatchCompute(screenWidth / 8, screenHeight / 8, 1);
-	glMemoryBarrier(GL_ALL_BARRIER_BITS);
+		bbPos.x + bbOffset.x, bbPos.y + bbOffset.y, bbPos.z - bbOffset.z,
+		bbPos.x + bbOffset.x, bbPos.y + bbOffset.y, bbPos.z + bbOffset.z,
 
-	shader.DeleteProgram(createRay);
+		bbPos.x + bbOffset.x, bbPos.y - bbOffset.y, bbPos.z - bbOffset.z,
+		bbPos.x + bbOffset.x, bbPos.y - bbOffset.y, bbPos.z + bbOffset.z
+	};
+	glBufferData(GL_ARRAY_BUFFER, sizeof(bbVerts), bbVerts, GL_STATIC_DRAW);
+	glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, NULL);
 
 	// declare raymarching program
 	unsigned int raymarching = shader.CreateProgram();
@@ -144,10 +136,10 @@ void FluidSolver::Render()
 	shader.RecordVBO(renderVbo);
 	static const float verts[] =
 	{
-		-1.0f, -1.0f, 0.5f, 1.0f,
-		 1.0f, -1.0f, 0.5f, 1.0f,
-		 1.0f,  1.0f, 0.5f, 1.0f,
-		-1.0f,  1.0f, 0.5f, 1.0f,
+		-1.0f, -1.0f, 0.0f, 1.0f,
+		 1.0f, -1.0f, 0.0f, 1.0f,
+		 1.0f,  1.0f, 0.0f, 1.0f,
+		-1.0f,  1.0f, 0.0f, 1.0f,
 	};
 	glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_STATIC_DRAW);
 	glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, 0, NULL);
@@ -184,17 +176,28 @@ void FluidSolver::Render()
 
 		ProcessInput(window);
 
-		//glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-		//glEnable(GL_DEPTH_TEST);
-		glClearColor(0.2f, 0.3f, 0.3f, 1.0f);
+		glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+		glEnable(GL_DEPTH_TEST);
+		glClearColor(0.f, 0.f, 0.f, 1.0f);
 		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
 		// draw boundingbox
-		//shader.Use(boundingbox);
-		//glm::mat4 model = glm::mat4(1.0f);
-		//glm::mat4 view = camera.GetViewMatrix();
-		//glm::mat4 projection = glm::perspective(glm::radians(camera.zoom), (float)screenWidth / (float)screenHeight, 0.1f, 100.0f);
-		//shader.SetMat4(boundingbox, "view", view);
+		shader.Use(boundingbox);
+		glm::mat4 model = glm::mat4(1.0f);
+		glm::mat4 view = staticCamera.GetViewMatrix();
+		glm::mat4 projection = glm::perspective(glm::radians(staticCamera.fov), (float)screenWidth / (float)screenHeight, staticCamera.nearPlane, staticCamera.farPlane);
+		shader.SetMat4(boundingbox, "model", model);
+		shader.SetMat4(boundingbox, "view", view);
+		shader.SetMat4(boundingbox, "projection", projection);
+		glBindVertexArray(bbVao);
+		glDrawArrays(GL_LINE_LOOP, 0, 10);
+		glDrawArrays(GL_LINES, 10, 8);
+		glBindVertexArray(0);
+
+		glBindFramebuffer(GL_FRAMEBUFFER, 0);
+		glDisable(GL_DEPTH_TEST);
+		glClearColor(0.f, 0.f, 0.f, 1.0f);
+		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
 		// update density field
 		solver.Update();
@@ -208,8 +211,15 @@ void FluidSolver::Render()
 		shader.SetVec3(raymarching, "objectOffset", fluidObjects[0].offset);
 		shader.SetVec3(raymarching, "cameraPos", staticCamera.position);
 		shader.SetVec3(raymarching, "camForward", staticCamera.front);
-		glBindImageTexture(0, rayDir, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA32F);
-		glBindImageTexture(1, raymarchingRes, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F);
+		shader.SetVec3(raymarching, "camUp", staticCamera.up);
+		shader.SetVec3(raymarching, "camRight", staticCamera.right);
+		shader.SetVec2(raymarching, "resolution", glm::vec2(screenWidth, screenHeight));
+		shader.SetFloat(raymarching, "fov", staticCamera.fov);
+		shader.SetFloat(raymarching, "nearPlane", staticCamera.nearPlane);
+		shader.SetFloat(raymarching, "farPlane", staticCamera.farPlane);
+		glBindImageTexture(0, raymarchingRes, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F);
+		glBindImageTexture(1, renderTarget, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA32F);
+		glBindImageTexture(2, sceneDepth, 0, GL_FALSE, 0, GL_READ_ONLY, GL_R32F);
 		glEnable(GL_TEXTURE_3D);
 		glBindTexture(GL_TEXTURE_3D, densityTexture);
 		glDispatchCompute(screenWidth / 8, screenHeight / 8, 1);
@@ -218,6 +228,7 @@ void FluidSolver::Render()
 		// draw result to canvas
 		shader.Use(render);
 		glBindTexture(GL_TEXTURE_2D, raymarchingRes);
+		glBindVertexArray(renderVao);
 		glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
 
 		// glfw: swap buffers and poll IO events (keys pressed/released, mouse moved etc.)
@@ -287,6 +298,9 @@ void FluidSolver::ProcessInput(GLFWwindow *window)
 		staticCamera.ProcessKeyboard(LEFT, deltaTime);
 	if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
 		staticCamera.ProcessKeyboard(RIGHT, deltaTime);
+
+	if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS)
+		std::cout << "fuck" << std::endl;
 }
 
 void framebuffer_size_callback(GLFWwindow* window, int width, int height)

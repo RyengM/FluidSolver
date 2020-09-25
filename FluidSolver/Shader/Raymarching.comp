@@ -1,14 +1,20 @@
 #version 430 core
 
 layout(local_size_x = 8, local_size_y = 8) in;
-layout(binding = 0, rgba32f) uniform image2D rayDir;
-layout(binding = 1, rgba32f) uniform image2D raymarchingRes;
-//layout(binding = 2, rgba32f) uniform image3D densityTexture;
+layout(binding = 0, rgba32f) uniform image2D raymarchingRes;
+layout(binding = 1, rgba32f) uniform image2D scene;
+layout(binding = 2, r32f) uniform image2D sceneDepth;
 
 uniform vec3 objectPos;
 uniform vec3 objectOffset;
 uniform vec3 cameraPos;
 uniform vec3 camForward;
+uniform vec3 camUp;
+uniform vec3 camRight;
+uniform vec2 resolution;
+uniform float fov;
+uniform float nearPlane;
+uniform float farPlane;
 
 uniform sampler3D densityTexture;
 
@@ -22,65 +28,98 @@ Ray CreateRay(vec3 pos, vec3 dir)
 {
 	Ray ray;
 	ray.pos = pos;
-	ray.dir = dir + 1e-16;
+	ray.dir = dir + 1e-20;
 	return ray;
 }
 
+float sdfSphere(vec3 pos, float radius)
+{
+	return length(pos) - radius;
+}
+
+float sdfField(vec3 pos)
+{
+	return sdfSphere(pos, 0.1);
+}
+
+vec3 getNormal(vec3 pos)
+{
+	vec2 offset = vec2(0.001f,0.0f);
+    vec3 n= vec3(
+        sdfField(pos+offset.xyy)-sdfField(pos.xyy),
+        sdfField(pos+offset.yxy)-sdfField(pos.yxy),
+        sdfField(pos+offset.yyx)-sdfField(pos.yyx)
+    );
+    return normalize(n);
+}
+
+struct RayHit
+{
+	vec3 pos;
+	vec3 normal;
+};
+
+RayHit CreateRayHit()
+{
+	RayHit rayHit;
+	rayHit.pos = vec3(0, 0, 0);
+	rayHit.normal = vec3(0, 0, 0);
+	return rayHit;
+};
+
 void main()
 {
-	vec2 dir = imageLoad(rayDir, ivec2(gl_GlobalInvocationID.xy)).xy;
-	// direction: x right, y up, z forward
-	vec3 camUp = vec3(0, 1, 0);
-	vec3 camRight = cross(camForward, camUp);
-	camUp = cross(camRight, camForward);
+	float x = (gl_GlobalInvocationID.x / resolution.x - 0.5f) * 2.f * nearPlane * tan(radians(fov / 2.f)) * resolution.x / resolution.y;
+	float y = (gl_GlobalInvocationID.y / resolution.y - 0.5f) * 2.f * nearPlane * tan(radians(fov / 2.f));
+	vec2 dir = vec2(x, y);
 
-	vec3 pixelPos = cameraPos + camForward * 0.5 + dir.x * camRight + dir.y * camUp;
+	vec3 pixelPos = cameraPos + camForward * nearPlane + dir.x * camRight + dir.y * camUp;
 	Ray ray = CreateRay(cameraPos, normalize(pixelPos - cameraPos));
 
 	// ray intersection
 	vec3 firstIntersection = (objectPos - objectOffset - cameraPos) / ray.dir;
 	vec3 secondIntersection = (objectPos + objectOffset - cameraPos) / ray.dir;
 	vec3 closest = min(firstIntersection, secondIntersection);
-	vec3 furthesr = max(firstIntersection, secondIntersection);
+	vec3 furthest = max(firstIntersection, secondIntersection);
 
 	// the distance between camera and hit point of the nearst and furthest plane
 	float t0 = max(closest.x, max(closest.y, closest.z));
-	float t1 = min(furthesr.x, min(furthesr.y, furthesr.z));
+	float t1 = min(furthest.x, min(furthest.y, furthest.z));
 
 	t0 = max(0, t0);
 
 	// the distance between entry point and out point
 	float boxThickness = max(0, t1 - t0);
-	vec3 entryPos = cameraPos + max(0, t0) * ray.dir;
+	vec3 entryPos = cameraPos + t0 * ray.dir;
 
 	int shadowSteps = 64;
-	int raymarchStep = 512;
+	float raymarchStep = 512;
 	// ensure ray can walk through the volume
 	int maxSteps = int(raymarchStep * length(2 * objectOffset)) + 1;
 
 	vec3 lightVec = normalize(vec3(0, 0, -1));
 	lightVec *= 1 / shadowSteps * 0.5;
-	vec3 localCamVec = ray.dir / raymarchStep;
+	vec3 localCamVec = ray.dir / raymarchStep / (2.f * objectOffset);
 
 	// convert the sample range to 0-1
-	vec3 curPos = (entryPos - objectPos + objectOffset) / (2 * objectOffset);
+	vec3 curPos = (entryPos - objectPos + objectOffset) / (2.f * objectOffset);
 	float curDensity = 0;
 	float density = 64;
 	float shadowDensity = 32;
-	vec3 lightEnergy = vec3(0, 0, 0);
+	float lightEnergy = 0;
 	float transmittance = 1;
 	vec3 lightColor = vec3(0.6, 0.6, 0.6);
 	float shadowThresh = 0.05;
 
 	for (int i = 0; i < maxSteps; i++)
 	{	
+		if (t1 - t0 <= 0)
+			break;
+
 		float cursample = texture(densityTexture, curPos).x;
 
 		if(cursample > 0.001)
 		{
-			vec3 lpos = curPos;
-			float shadowDist = 0;
-
 			curDensity = 1 - exp(-cursample * density);
 
 			lightEnergy += curDensity * transmittance * 0.01;
@@ -89,5 +128,16 @@ void main()
 		curPos += localCamVec;
 	}
 
-	imageStore(raymarchingRes, ivec2(gl_GlobalInvocationID.xy), vec4(lightEnergy, 1));
+	vec4 inScene = imageLoad(scene, ivec2(gl_GlobalInvocationID.xy));
+	vec3 sceneColor = inScene.xyz;
+
+	float depth = inScene.w;
+	float objDepth = (1 / t0 - 1 / nearPlane) / (1 / farPlane - 1 / nearPlane);
+
+	vec3 finalColor = vec3(lightEnergy);
+
+	if (sceneColor != vec3(0.f, 0.f, 0.f))
+		finalColor = vec3(1.f, 0.f, 0.f);
+
+	imageStore(raymarchingRes, ivec2(gl_GlobalInvocationID.xy), vec4(finalColor, 1));
 }
