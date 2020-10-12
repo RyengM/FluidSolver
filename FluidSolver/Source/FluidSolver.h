@@ -3,7 +3,7 @@
 #include <vector>
 
 #include "Camera.h"
-#include "FluidObject.h"
+#include "Objects.h"
 
 // actually a scene to manage the objects in it, especially for fluids
 class FluidSolver
@@ -18,11 +18,6 @@ public:
 
 	void GLFinish();
 
-	inline void AddObject(FluidObject obj)
-	{
-		fluidObjects.emplace_back(obj);
-	}
-
 public:
 	void ProcessInput(GLFWwindow *window);
 
@@ -30,11 +25,12 @@ public:
 	// we assume there is always one camera now, so it is only a decorate now, which will be used later, maybe
 	// so the settings about camera is global now, don't care
 	Camera camera;
-	std::vector<FluidObject> fluidObjects;
-
+	FluidObject fluidObject;
+	Ball ball;
+	
 private:
 	GLFWwindow* window = nullptr;
 
-	const unsigned int screenWidth = 800;
-	const unsigned int screenHeight = 800;
+	const unsigned int screenWidth = 1200;
+	const unsigned int screenHeight = 1200;
 };

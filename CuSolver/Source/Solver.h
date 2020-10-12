@@ -9,14 +9,16 @@
 class SOLVER_API Solver
 {
 public:
-	Solver(int nx, int ny, int nz, float rho, int max_iter, float dt, float curl_strength, float vel_x, float vel_y, float vel_z) :
-		nx(nx), ny(ny), nz(nz), rho(rho), max_iter(max_iter), dt(dt), curl_strength(curl_strength), vel_x(vel_x), vel_y(vel_y), vel_z(vel_z) {};
+	Solver(int nx, int ny, int nz, float rho, float tempeture, float tempeture_env, int max_iter, float dt, float curl_strength, float vel_x, float vel_y, float vel_z) :
+		nx(nx), ny(ny), nz(nz), rho(rho), tempeture(tempeture), tempeture_env(tempeture_env), max_iter(max_iter), dt(dt), curl_strength(curl_strength), vel_x(vel_x), vel_y(vel_y), vel_z(vel_z) {};
 	
 	~Solver();
 
 	void Initialize();
 
 	void Update();
+
+	void Reduce();
 
 	void Conjugate();
 
@@ -39,8 +41,15 @@ private:
 	int nz = 0;
 	// initial density
 	float rho = 0;
+	// initial tempture
+	float tempeture = 0;
+	float tempeture_env = 0;
+	// gravity
+	float gravity = 9.8f;
 	int max_iter = 0;
+	// time step
 	float dt = 0;
+	// vorticity refinement coefficient
 	float curl_strength = 0;
 	// initial velocity
 	float vel_x = 0;
@@ -61,6 +70,9 @@ private:
 	// density field
 	float* f_rho;
 	float* f_new_rho;
+	// tempeture field
+	float* f_tempeture;
+	float* f_new_tempeture;
 	// pressure field
 	float* f_pressure;
 	float* f_new_pressure;

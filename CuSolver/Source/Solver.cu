@@ -202,7 +202,17 @@ static __global__ void Fill(float* field, int offset, float fill)
 	field[offset + ind] = fill;
 }
 
-static __global__ void GlobalReduce(float* a, float* b, float* res)
+static __global__ void Mul(float* a, float* b, float* res)
+{
+	size_t i = threadIdx.x;
+	size_t j = blockIdx.x;
+	size_t k = blockIdx.y;
+	size_t ind = i + j * blockDim.x + k * blockDim.x * gridDim.x;
+
+	res[ind] = a[ind] * b[ind];
+}
+
+static __global__ void GlobalReduce(float* res)
 {
 	 __shared__ float sdata[1024];
 	size_t tid = threadIdx.x;
@@ -210,7 +220,7 @@ static __global__ void GlobalReduce(float* a, float* b, float* res)
 	size_t k = blockIdx.y;
 	size_t ind = tid + j * blockDim.x + k * blockDim.x * gridDim.x;
 
-	sdata[tid] = a[ind] * b[ind];
+	sdata[tid] = res[ind];
 	__syncthreads();
 
 	// do reduction in shared memory
@@ -246,16 +256,19 @@ static __global__ void BlockReduce(float* a)
 	}
 }
 
-static __global__ void SourceKernel(float* rho, float* ux, float* uy, float* uz, float rho0, float3 u0)
+static __global__ void SourceKernel(float* rho, float* tempeture, float* ux, float* uy, float* uz, float rho0, float tempeture0, float tempeture_env, float3 u0)
 {
 	size_t i = threadIdx.x;
 	size_t j = blockIdx.x;
 	size_t k = blockIdx.y;
 	size_t ind = i + j * blockDim.x + k * blockDim.x * gridDim.x;
 
-	if (i > blockDim.x / 2 - 2 && i < blockDim.x / 2 + 2 && j > gridDim.x / 2 - 2 && j < gridDim.x / 2 + 2 && k > 1 && k < 3)
+	tempeture[ind] = tempeture_env;
+
+	if (i > blockDim.x / 2 - 5 && i < blockDim.x / 2 + 5 && j > 10 && j < 20 && k > 1 && k < 4)
 	{
 		rho[ind] = rho0;
+		tempeture[ind] = tempeture0;
 		ux[ind] = u0.x;
 		uy[ind] = u0.y;
 		uz[ind] = u0.z;
@@ -292,7 +305,7 @@ static __global__ void DivergenceKernel(float* field, float* ux, float* uy, floa
 	float ubo = sample(uz, combine_int3(i, j, k - 1), max_pos);
 	float ut = sample(uz, combine_int3(i, j, k + 1), max_pos);
 
-#if 0
+#if 1
 	// box boundary
 	float ucx = sample(ux, combine_int3(i, j, k), max_pos);
 	float ucy = sample(uy, combine_int3(i, j, k), max_pos);
@@ -373,7 +386,7 @@ static __global__ void VorticityKernel(float* f_vortx, float* f_vorty, float* f_
 	f_vortz[ind] = (ur - ul - uf + ubh) * 0.5;
 }
 
-static __global__ void ForceKernel(float* f_ux, float* f_uy, float* f_uz, float* f_vortx, float* f_vorty, float* f_vortz, float dt, float curl_strength, int3 max_pos)
+static __global__ void ForceKernel(float* f_ux, float* f_uy, float* f_uz, float* f_vortx, float* f_vorty, float* f_vortz, float* f_rho, float* f_tempeture, float dt, float curl_strength, float tempeture_env, float gravity, int3 max_pos)
 {
 	size_t i = threadIdx.x;
 	size_t j = blockIdx.x;
@@ -403,12 +416,14 @@ static __global__ void ForceKernel(float* f_ux, float* f_uy, float* f_uz, float*
 		sample(f_vortz, combine_int3(i, j, k), max_pos));
 
 	// ¦Ç = ¨Œ|¦Ø|, N = ¦Ç/|¦Ç|
-	float3 force = normalize(combine_float3(abs(length(vr)) - abs(length(vl)), abs(length(vf)) - abs(length(vbh)), abs(length(vt)) - abs(length(vbo))));
+	float3 force_vort = normalize(combine_float3(abs(length(vr)) - abs(length(vl)), abs(length(vf)) - abs(length(vbh)), abs(length(vt)) - abs(length(vbo))));
 	// f_conf(vort) = ¦Åh(N¡Á¦Ø)
-	float3 fvort = curl_strength * cross(force, vc);
+	float3 fvort = curl_strength * cross(force_vort, vc);
+
+	float buoyancy = -(gravity * f_rho[ind]) * 0.01f + (f_tempeture[ind] - tempeture_env) * 5.f;
 
 	f_ux[ind] += fvort.x * dt;
-	f_uy[ind] += fvort.y * dt;
+	f_uy[ind] += (fvort.y + buoyancy) * dt;
 	f_uz[ind] += fvort.z * dt;
 }
 
@@ -435,7 +450,6 @@ static __global__ void ComputeAp(float* Ap, float* p, int3 max_pos)
 	float pc = cg_sample(p, combine_int3(i, j, k), max_pos);
 
 	Ap[ind] = 6.f * pc - neibor_sum(p, ind, 0, max_pos);
-	//printf("ap %f %f\n", pc, neibor_sum(p, ind, 0, max_pos));
 }
 
 static __global__ void UpdateResidual(float* r, float* p, float* Ap, float* x, float alpha)
@@ -469,7 +483,7 @@ static __global__ void Restrict(float* r, float* z, int offset, int3 max_pos)
 	float res = r[offset + ind] - (6 * z[offset + ind] - neibor_sum(z, ind, offset, max_pos));
 	// r[l+1][pos//2] += res * 0.5
 	offset += max_pos.x * max_pos.y * max_pos.z;
-	int new_ind = i >> 2 + (j >> 2) * (max_pos.x >> 2) + (k >> 2) * (max_pos.x >> 2) * (max_pos.y >> 2);
+	size_t new_ind = i >> 2 + (j >> 2) * (max_pos.x >> 2) + (k >> 2) * (max_pos.x >> 2) * (max_pos.y >> 2);
 	r[offset + new_ind] += res * 0.5;
 }
 
@@ -481,7 +495,7 @@ static __global__ void Prolongate(float* z, int offset, int3 max_pos)
 	size_t ind = i + j * blockDim.x + k * blockDim.x * gridDim.x;
 
 	// r[l][pos] = r[l+1][pos//2]
-	int new_ind = i >> 2 + (j >> 2) * (max_pos.x >> 2) + (k >> 2) * (max_pos.x >> 2) * (max_pos.y >> 2);
+	size_t new_ind = i >> 2 + (j >> 2) * (max_pos.x >> 2) + (k >> 2) * (max_pos.x >> 2) * (max_pos.y >> 2);
 	z[offset + ind] += z[offset + max_pos.x * max_pos.y * max_pos.z + new_ind];
 }
 
@@ -509,6 +523,8 @@ void Solver::InitCuda()
 	checkCudaErrors(cudaMalloc((void**)&f_new_uz, nx * ny * nz * sizeof(float)));
 	checkCudaErrors(cudaMalloc((void**)&f_rho, nx * ny * nz * sizeof(float)));
 	checkCudaErrors(cudaMalloc((void**)&f_new_rho, nx * ny * nz * sizeof(float)));
+	checkCudaErrors(cudaMalloc((void**)&f_tempeture, nx * ny * nz * sizeof(float)));
+	checkCudaErrors(cudaMalloc((void**)&f_new_tempeture, nx * ny * nz * sizeof(float)));
 	checkCudaErrors(cudaMalloc((void**)&f_pressure, nx * ny * nz * sizeof(float)));
 	checkCudaErrors(cudaMalloc((void**)&f_new_pressure, nx * ny * nz * sizeof(float)));
 	checkCudaErrors(cudaMalloc((void**)&f_div, nx * ny * nz * sizeof(float)));
@@ -532,6 +548,8 @@ void Solver::InitCuda()
 	checkCudaErrors(cudaMemset(f_new_uz, 0, nx * ny * nz * sizeof(float)));
 	checkCudaErrors(cudaMemset(f_rho, 0, nx * ny * nz * sizeof(float)));
 	checkCudaErrors(cudaMemset(f_new_rho, 0, nx * ny * nz * sizeof(float)));
+	checkCudaErrors(cudaMemset(f_tempeture, 0, nx * ny * nz * sizeof(float)));
+	checkCudaErrors(cudaMemset(f_new_tempeture, 0, nx * ny * nz * sizeof(float)));
 	checkCudaErrors(cudaMemset(f_pressure, 0, nx * ny * nz * sizeof(float)));
 	checkCudaErrors(cudaMemset(f_new_pressure, 0, nx * ny * nz * sizeof(float)));
 	checkCudaErrors(cudaMemset(f_div, 0, nx * ny * nz * sizeof(float)));
@@ -558,6 +576,8 @@ void Solver::FreeCuda()
 	checkCudaErrors(cudaFree(f_new_uz));
 	checkCudaErrors(cudaFree(f_rho));
 	checkCudaErrors(cudaFree(f_new_rho));
+	checkCudaErrors(cudaFree(f_tempeture));
+	checkCudaErrors(cudaFree(f_new_tempeture));
 	checkCudaErrors(cudaFree(f_pressure));
 	checkCudaErrors(cudaFree(f_new_pressure));
 	checkCudaErrors(cudaFree(f_div));
@@ -587,10 +607,10 @@ void Solver::UpdateCuda()
 	max_pos.z = nz;
 
 	// add source
-	SourceKernel << <dim3(ny, nz), nx >> > (f_rho, f_ux, f_uy, f_uz, rho, u);
+	SourceKernel << <dim3(ny, nz), nx >> > (f_rho, f_tempeture, f_ux, f_uy, f_uz, rho, tempeture, tempeture_env, u);
 	// add force
 	VorticityKernel << <dim3(ny, nz), nx >> > (f_vortx, f_vorty, f_vortz, f_ux, f_uy, f_uz, max_pos);
-	ForceKernel << <dim3(ny, nz), nx >> > (f_ux, f_uy, f_uz, f_vortx, f_vorty, f_vortz, dt, curl_strength, max_pos);
+	ForceKernel << <dim3(ny, nz), nx >> > (f_ux, f_uy, f_uz, f_vortx, f_vorty, f_vortz, f_rho, f_tempeture, dt, curl_strength, tempeture_env, gravity, max_pos);
 	// velocity advection
 	SemiLagKernel << <dim3(ny, nz), nx >> > (f_ux, f_new_ux, f_ux, f_uy, f_uz, dt, max_pos);
 	SemiLagKernel << <dim3(ny, nz), nx >> > (f_uy, f_new_uy, f_ux, f_uy, f_uz, dt, max_pos);
@@ -598,6 +618,9 @@ void Solver::UpdateCuda()
 	swap(&f_ux, &f_new_ux);
 	swap(&f_uy, &f_new_uy);
 	swap(&f_uz, &f_new_uz);
+	// tempeture advection
+	SemiLagKernel << <dim3(ny, nz), nx >> > (f_tempeture, f_new_tempeture, f_ux, f_uy, f_uz, dt, max_pos);
+	swap(&f_tempeture, &f_new_tempeture);
 	// density advection
 	SemiLagKernel << <dim3(ny, nz), nx >> > (f_rho, f_new_rho, f_ux, f_uy, f_uz, dt, max_pos);
 	swap(&f_rho, &f_new_rho);
@@ -648,6 +671,20 @@ Solver::~Solver()
 	FreeCuda();
 }
 
+void Solver::Reduce()
+{
+	int resolution = nx * ny * nz;
+	int blockResolution = resolution / 1024;
+	int dimResolution = sqrt(blockResolution);
+	GlobalReduce << <dim3(dimResolution, dimResolution), 1024 >> > (temp);
+	if (blockResolution > 1024)
+	{
+		blockResolution /= 1024;
+		GlobalReduce << <dim3(blockResolution, 1), 1024 >> > (temp);
+	}
+	BlockReduce << <1, blockResolution >> > (temp);
+}
+
 void Solver::Conjugate()
 {
 	int3 max_pos;
@@ -655,15 +692,13 @@ void Solver::Conjugate()
 	max_pos.y = ny;
 	max_pos.z = nz;
 
-	int n = nx * ny * nz;
-
 	InitConjugate << <dim3(ny, nz), nx >> > (r, f_div, x);
 
 	// aTb operator, calc the sum of each block and then reduce all the data
 	// note that the number of thread in each block cannot exceed 1024
 	// the number here should self-adapte to the amount of euler girds, here is 64*64*256, should be modified whenever grid size is changed
-	GlobalReduce << <dim3(32, 32), 1024 >> > (r, r, temp);
-	BlockReduce << <1, 1024 >> > (temp);
+	Mul << <dim3(ny, nz), nx >> > (r, r, temp);
+	Reduce();
 	checkCudaErrors(cudaMemcpy(&init_rTr, &temp[0], sizeof(float), cudaMemcpyDeviceToHost));
 
 	std::cout << "init rTr: " << init_rTr << std::endl;
@@ -677,16 +712,16 @@ void Solver::Conjugate()
 	// p(0) = M^-1 r(0)
 	UpdateP << <dim3(ny, nz), nx >> > (p, z, 0);
 
-	GlobalReduce << <dim3(32, 32), 1024 >> > (z, r, temp);
-	BlockReduce << <1, 1024 >> > (temp);
+	Mul << <dim3(ny, nz), nx >> > (z, r, temp);
+	Reduce();
 	checkCudaErrors(cudaMemcpy(&old_zTr, &temp[0], sizeof(float), cudaMemcpyDeviceToHost));
 
 	for (int i = 0; i < 30; ++i)
 	{
 		// ¦Á(k) = r(k)Tr(k) / p(k)TAp(k)
 		ComputeAp << <dim3(ny, nz), nx >> > (Ap, p, max_pos);
-		GlobalReduce << <dim3(32, 32), 1024 >> > (p, Ap, temp);
-		BlockReduce << <1, 1024 >> > (temp);
+		Mul << <dim3(ny, nz), nx >> > (p, Ap, temp);
+		Reduce();
 		checkCudaErrors(cudaMemcpy(&pAp, &temp[0], sizeof(float), cudaMemcpyDeviceToHost));
 		float alpha = old_zTr / pAp;
 
@@ -694,8 +729,8 @@ void Solver::Conjugate()
 		UpdateResidual << <dim3(ny, nz), nx >> > (r, p, Ap, x, alpha);
 
 		// if ||r(k+1)|| is sufficient enough small, break
-		GlobalReduce << <dim3(32, 32), 1024 >> > (r, r, temp);
-		BlockReduce << <1, 1024 >> > (temp);
+		Mul << <dim3(ny, nz), nx >> > (r, r, temp);
+		Reduce();
 		checkCudaErrors(cudaMemcpy(&rTr, &temp[0], sizeof(float), cudaMemcpyDeviceToHost));
 		std::cout << "iter " << i << " rTr: " << rTr << std::endl;
 
@@ -710,8 +745,8 @@ void Solver::Conjugate()
 #endif
 
 		// ¦Â(k) = r(k+1)Tr(k+1)/r(k)Tr(k)
-		GlobalReduce << <dim3(32, 32), 1024 >> > (z, r, temp);
-		BlockReduce << <1, 1024 >> > (temp);
+		Mul << <dim3(ny, nz), nx >> > (z, r, temp);
+		Reduce();
 		checkCudaErrors(cudaMemcpy(&new_zTr, &temp[0], sizeof(float), cudaMemcpyDeviceToHost));
 		float beta = new_zTr / old_zTr;
 		// p(k+1) = r(k+1) + ¦Â(k)p(k)

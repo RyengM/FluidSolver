@@ -13,8 +13,8 @@
 #include <Solver.h>
 #include <memory>
 
-#define Nx 64
-#define Ny 64
+#define Nx 128
+#define Ny 128
 #define Nz 256
 
 Camera staticCamera;
@@ -75,8 +75,8 @@ void FluidSolver::Render()
 	glBindBuffer(GL_ARRAY_BUFFER, bbVbo);
 	shader.RecordVAO(bbVao);
 	shader.RecordVBO(bbVbo);
-	glm::vec3 bbPos = fluidObjects[0].pos;
-	glm::vec3 bbOffset = fluidObjects[0].offset;
+	glm::vec3 bbPos = fluidObject.pos;
+	glm::vec3 bbOffset = fluidObject.offset;
 	static const float bbVerts[] =
 	{
 		bbPos.x - bbOffset.x, bbPos.y - bbOffset.y, bbPos.z - bbOffset.z,
@@ -145,7 +145,7 @@ void FluidSolver::Render()
 	glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, 0, NULL);
 
 	// fetch data from cu solver
-	Solver solver = Solver(Nx, Ny, Nz, 0.05f, 30, 0.02f, 0.4f, 0.f, 0.f, 20.f);
+	Solver solver = Solver(Nx, Ny, Nz, 0.03f, 140.f, 20.f, 30, 0.04f, 5.f, 0.f, 0.f, 40.f);
 	solver.Initialize();
 	solver.Update();
 	// result to stack corruption, but data is right, ignore it now
@@ -207,8 +207,8 @@ void FluidSolver::Render()
 
 		// calc raymarching result
 		shader.Use(raymarching);
-		shader.SetVec3(raymarching, "objectPos", fluidObjects[0].pos);
-		shader.SetVec3(raymarching, "objectOffset", fluidObjects[0].offset);
+		shader.SetVec3(raymarching, "objectPos", bbPos);
+		shader.SetVec3(raymarching, "objectOffset", bbOffset);
 		shader.SetVec3(raymarching, "cameraPos", staticCamera.position);
 		shader.SetVec3(raymarching, "camForward", staticCamera.front);
 		shader.SetVec3(raymarching, "camUp", staticCamera.up);
