@@ -13,10 +13,6 @@
 #include <Solver.h>
 #include <memory>
 
-#define Nx 128
-#define Ny 128
-#define Nz 256
-
 Camera staticCamera;
 // mouse position at last frame
 float lastX;
@@ -145,7 +141,7 @@ void FluidSolver::Render()
 	glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, 0, NULL);
 
 	// fetch data from cu solver
-	Solver solver = Solver(Nx, Ny, Nz, 0.03f, 140.f, 20.f, 30, 0.04f, 5.f, 0.f, 0.f, 40.f);
+	Solver solver = Solver(Nx, Ny, Nz, 0.03f, 120.f, 20.f, 1000, 0.04f, 0.f, 0.f, 0.f, 0.f);
 	solver.Initialize();
 	solver.Update();
 	// result to stack corruption, but data is right, ignore it now

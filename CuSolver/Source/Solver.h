@@ -78,6 +78,10 @@ private:
 	float* f_new_pressure;
 	// divergence field
 	float* f_div;
+	// average velocity field
+	float* f_avgux;
+	float* f_avguy;
+	float* f_avguz;
 	// vorticity field
 	float* f_vortx;
 	float* f_vorty;

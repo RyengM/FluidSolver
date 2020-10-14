@@ -5,6 +5,10 @@
 #include "Camera.h"
 #include "Objects.h"
 
+#define Nx 64
+#define Ny 256
+#define Nz 64
+
 // actually a scene to manage the objects in it, especially for fluids
 class FluidSolver
 {

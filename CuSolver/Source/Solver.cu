@@ -6,6 +6,14 @@
 
 #define MGPCG 1
 
+/////////////////////////////
+//        | y              //
+//        |                //
+//        | __ __ __ x     //
+//       /                 //
+//    z /                  //
+/////////////////////////////
+
 static __device__ int3 combine_int3(int a, int b, int c)
 {
 	int3 res;
@@ -40,27 +48,27 @@ static __device__ int3 minmax(int3 pos, int3 max_pos)
 	return pos;
 }
 
+// xoxels out of bound will be assigned as border value
 static __device__ float sample(float* field, int3 pos, int3 max_pos)
 {
 	pos = minmax(pos, max_pos);
 	return field[pos.x + pos.y * max_pos.x + pos.z * max_pos.x * max_pos.y];
 }
 
-static __device__ float neibor_sum(float* field, int pos, int offset, int3 max_pos)
-{
-	int i = pos % max_pos.x;
-	int j = pos % (max_pos.x * max_pos.y) / max_pos.x;
-	int k = pos / (max_pos.x * max_pos.y);
-	return i > 0 ? field[offset + pos - 1] : 0 + i < max_pos.x - 1 ? field[offset + pos + 1] : 0 +
-		j > 0 ? field[offset + pos - max_pos.x] : 0 + j < max_pos.y - 1 ? field[offset + pos + max_pos.x] : 0 +
-		k > 0 ? field[offset + pos - max_pos.x * max_pos.y] : 0 + k < max_pos.z - 1 ? field[offset + pos + max_pos.x * max_pos.y] : 0;
-}
-
+// voxels out of bound will be regarded as 0
 static __device__ float cg_sample(float* field, int3 pos, int3 max_pos)
 {
 	if (pos.x < 0 || pos.x >= max_pos.x || pos.y < 0 || pos.y >= max_pos.y || pos.z < 0 || pos.z >= max_pos.z)
 		return 0;
 	return field[pos.x + pos.y * max_pos.x + pos.z * max_pos.x * max_pos.y];
+}
+
+static __device__ float neibor_sum(float* field, size_t i, size_t j, size_t k, int3 max_pos)
+{
+	size_t pos = i + j * max_pos.x + k * max_pos.x * max_pos.y;
+	return cg_sample(field, combine_int3(i - 1, j, k), max_pos) + cg_sample(field, combine_int3(i + 1, j, k), max_pos)
+		+ cg_sample(field, combine_int3(i, j - 1, k), max_pos) + cg_sample(field, combine_int3(i, j + 1, k), max_pos)
+		+ cg_sample(field, combine_int3(i, j, k - 1), max_pos) + cg_sample(field, combine_int3(i, j, k + 1), max_pos);
 }
 
 static __device__ float length(float3 f)
@@ -192,14 +200,14 @@ static __global__ void CopyFrom(float* dst, float* src)
 	dst[ind] = src[ind];
 }
 
-static __global__ void Fill(float* field, int offset, float fill)
+static __global__ void Fill(float* field, float fill)
 {
 	size_t i = threadIdx.x;
 	size_t j = blockIdx.x;
 	size_t k = blockIdx.y;
 	size_t ind = i + j * blockDim.x + k * blockDim.x * gridDim.x;
 
-	field[offset + ind] = fill;
+	field[ind] = fill;
 }
 
 static __global__ void Mul(float* a, float* b, float* res)
@@ -224,20 +232,20 @@ static __global__ void GlobalReduce(float* res)
 	__syncthreads();
 
 	// do reduction in shared memory
-	for (unsigned int s = blockDim.x / 2; s > 32; s >>= 1)
+	for (unsigned int s = blockDim.x / 2; s > 0; s >>= 1)
 	{
 		if (tid < s)
 			sdata[tid] += sdata[tid + s];
 		__syncthreads();
 	}
-	// when threads <=32, there is only one wrap is working, no synchonization is required in a wrap
-	// there are still some optimization, maybe applied later
-	if (tid < 32)
-	{
-		sdata[tid] += sdata[tid + 32]; sdata[tid] += sdata[tid + 16];
-		sdata[tid] += sdata[tid + 8]; sdata[tid] += sdata[tid + 4];
-		sdata[tid] += sdata[tid + 2]; sdata[tid] += sdata[tid + 1];
-	}
+	//// when threads <=32, there is only one wrap is working, no synchonization is required in a wrap
+	//// there are still some optimization, maybe applied later
+	//if (tid < 32)
+	//{
+	//	sdata[tid] += sdata[tid + 32]; sdata[tid] += sdata[tid + 16];
+	//	sdata[tid] += sdata[tid + 8]; sdata[tid] += sdata[tid + 4];
+	//	sdata[tid] += sdata[tid + 2]; sdata[tid] += sdata[tid + 1];
+	//}
 
 	// write result to global memory
 	if (tid == 0)
@@ -265,7 +273,7 @@ static __global__ void SourceKernel(float* rho, float* tempeture, float* ux, flo
 
 	tempeture[ind] = tempeture_env;
 
-	if (i > blockDim.x / 2 - 5 && i < blockDim.x / 2 + 5 && j > 10 && j < 20 && k > 1 && k < 4)
+	if (i > blockDim.x / 2 - 10 && i < blockDim.x / 2 + 10 && j > 1 && j < 4 && k > gridDim.y / 2 - 10 && k < gridDim.y / 2 + 10)
 	{
 		rho[ind] = rho0;
 		tempeture[ind] = tempeture0;
@@ -273,6 +281,14 @@ static __global__ void SourceKernel(float* rho, float* tempeture, float* ux, flo
 		uy[ind] = u0.y;
 		uz[ind] = u0.z;
 	}
+	//if (i > blockDim.x / 2 - 10 && i < blockDim.x / 2 + 10 && j > 125 && j < 128 && k > gridDim.y / 2 - 10 && k < gridDim.y / 2 + 10)
+	//{
+	//	rho[ind] = rho0;
+	//	tempeture[ind] = tempeture0;
+	//	ux[ind] = -u0.x;
+	//	uy[ind] = -u0.y;
+	//	uz[ind] = -u0.z;
+	//}
 }
 
 static __global__ void SemiLagKernel(float* field, float* new_field, float* ux, float* uy, float* uz, float dt, int3 max_pos)
@@ -291,6 +307,7 @@ static __global__ void SemiLagKernel(float* field, float* new_field, float* ux, 
 	new_field[ind] = trilerp(field, coord, max_pos);
 }
 
+// ¨Œ¡¤u
 static __global__ void DivergenceKernel(float* field, float* ux, float* uy, float* uz, int3 max_pos)
 {
 	size_t i = threadIdx.x;
@@ -300,10 +317,10 @@ static __global__ void DivergenceKernel(float* field, float* ux, float* uy, floa
 
 	float ul = sample(ux, combine_int3(i - 1, j, k), max_pos);
 	float ur = sample(ux, combine_int3(i + 1, j, k), max_pos);
-	float ubh = sample(uy, combine_int3(i, j - 1, k), max_pos);
-	float uf = sample(uy, combine_int3(i, j + 1, k), max_pos);
-	float ubo = sample(uz, combine_int3(i, j, k - 1), max_pos);
-	float ut = sample(uz, combine_int3(i, j, k + 1), max_pos);
+	float ubo = sample(uy, combine_int3(i, j - 1, k), max_pos);
+	float ut = sample(uy, combine_int3(i, j + 1, k), max_pos);
+	float ubh = sample(uz, combine_int3(i, j, k - 1), max_pos);
+	float uf = sample(uz, combine_int3(i, j, k + 1), max_pos);
 
 #if 1
 	// box boundary
@@ -315,13 +332,13 @@ static __global__ void DivergenceKernel(float* field, float* ux, float* uy, floa
 	if (i == max_pos.x - 1)
 		ur = -ucx;
 	if (j == 0)
-		ubh = -ucy;
+		ubo = -ucy;
 	if (j == max_pos.y - 1)
-		uf = -ucy;
+		ut = -ucy;
 	if (k == 0)
-		ubo = -ucz;
+		ubh = -ucz;
 	if (k == max_pos.z - 1)
-		ut = -ucz;
+		uf = -ucz;
 #endif
 
 	float div = (ur + uf + ut - ul - ubh - ubo) * 0.5;
@@ -329,6 +346,7 @@ static __global__ void DivergenceKernel(float* field, float* ux, float* uy, floa
 	field[ind] = div;
 }
 
+// -6p + ¦²p_neibor = ¨Œ¡¤u
 static __global__ void JacobiKernel(float* field, float* new_field, float* div_field, float* r, int3 max_pos)
 {
 	size_t i = threadIdx.x;
@@ -338,16 +356,17 @@ static __global__ void JacobiKernel(float* field, float* new_field, float* div_f
 
 	float pl = sample(field, combine_int3(i - 1, j, k), max_pos);
 	float pr = sample(field, combine_int3(i + 1, j, k), max_pos);
-	float pbh = sample(field, combine_int3(i, j - 1, k), max_pos);
-	float pf = sample(field, combine_int3(i, j + 1, k), max_pos);
-	float pbo = sample(field, combine_int3(i, j, k - 1), max_pos);
-	float pt = sample(field, combine_int3(i, j, k + 1), max_pos);
+	float pbo = sample(field, combine_int3(i, j - 1, k), max_pos);
+	float pt = sample(field, combine_int3(i, j + 1, k), max_pos);
+	float pbh = sample(field, combine_int3(i, j, k - 1), max_pos);
+	float pf = sample(field, combine_int3(i, j, k + 1), max_pos);
 	float div = sample(div_field, combine_int3(i, j, k), max_pos);
 
 	new_field[ind] = (pl + pr + pbh + pf + pbo + pt - div) / 6.f;
 	r[ind] = div + 6 * field[ind] - pl - pr - pbh - pf - pbo - pt;
 }
 
+// ¨Œ¡¤u = 0
 static __global__ void ApplyGradient(float* f_ux, float* f_uy, float* f_uz, float* pressure_field, int3 max_pos)
 {
 	size_t i = threadIdx.x;
@@ -357,33 +376,36 @@ static __global__ void ApplyGradient(float* f_ux, float* f_uy, float* f_uz, floa
 
 	float pl = sample(pressure_field, combine_int3(i - 1, j, k), max_pos);
 	float pr = sample(pressure_field, combine_int3(i + 1, j, k), max_pos);
-	float pbh = sample(pressure_field, combine_int3(i, j - 1, k), max_pos);
-	float pf = sample(pressure_field, combine_int3(i, j + 1, k), max_pos);
-	float pbo = sample(pressure_field, combine_int3(i, j, k - 1), max_pos);
-	float pt = sample(pressure_field, combine_int3(i, j, k + 1), max_pos);
+	float pbo = sample(pressure_field, combine_int3(i, j - 1, k), max_pos);
+	float pt = sample(pressure_field, combine_int3(i, j + 1, k), max_pos);
+	float pbh = sample(pressure_field, combine_int3(i, j, k - 1), max_pos);
+	float pf = sample(pressure_field, combine_int3(i, j, k + 1), max_pos);
 
 	f_ux[ind] -= 0.5 * (pr - pl);
-	f_uy[ind] -= 0.5 * (pf - pbh);
-	f_uz[ind] -= 0.5 * (pt - pbo);
+	f_uy[ind] -= 0.5 * (pt - pbo);
+	f_uz[ind] -= 0.5 * (pf - pbh);
 }
 
-static __global__ void VorticityKernel(float* f_vortx, float* f_vorty, float* f_vortz, float* ux, float* uy, float* uz, int3 max_pos)
+// ¦Ø = ¨Œ¡Áu
+static __global__ void VorticityKernel(float* f_vortx, float* f_vorty, float* f_vortz, float* ux, float* uy, float* uz, float* avgux, float* avguy, float* avguz,int3 max_pos)
 {
 	size_t i = threadIdx.x;
 	size_t j = blockIdx.x;
 	size_t k = blockIdx.y;
 	size_t ind = i + j * blockDim.x + k * blockDim.x * gridDim.x;
 
-	float ul = sample(ux, combine_int3(i - 1, j, k), max_pos);
-	float ur = sample(ux, combine_int3(i + 1, j, k), max_pos);
-	float ubh = sample(uy, combine_int3(i, j - 1, k), max_pos);
-	float uf = sample(uy, combine_int3(i, j + 1, k), max_pos);
-	float ubo = sample(uz, combine_int3(i, j, k - 1), max_pos);
-	float ut = sample(uz, combine_int3(i, j, k + 1), max_pos);
+	avgux[ind] = (sample(ux, combine_int3(i, j, k), max_pos) + sample(ux, combine_int3(i + 1, j, k), max_pos)) * 0.5;
+	avguy[ind] = (sample(uy, combine_int3(i, j, k), max_pos) + sample(uy, combine_int3(i, j + 1, k), max_pos)) * 0.5;
+	avguz[ind] = (sample(uz, combine_int3(i, j, k), max_pos) + sample(uz, combine_int3(i, j, k + 1), max_pos)) * 0.5;
 
-	f_vortx[ind] = (uf - ubh - ut + ubo) * 0.5;
-	f_vorty[ind] = (ut - ubo - ur + ul) * 0.5;
-	f_vortz[ind] = (ur - ul - uf + ubh) * 0.5;
+	__syncthreads();
+
+	f_vortx[ind] = (sample(avguz, combine_int3(i, j + 1, k), max_pos) - sample(avguz, combine_int3(i, j - 1, k), max_pos) -
+					sample(avguy, combine_int3(i, j, k + 1), max_pos) + sample(avguy, combine_int3(i, j, k - 1), max_pos)) * 0.5;
+	f_vorty[ind] = (sample(avgux, combine_int3(i, j, k + 1), max_pos) - sample(avgux, combine_int3(i, j, k - 1), max_pos) -
+					sample(avguz, combine_int3(i + 1, j, k), max_pos) + sample(avguz, combine_int3(i - 1, j, k), max_pos)) * 0.5;
+	f_vortz[ind] = (sample(avguy, combine_int3(i + 1, j, k), max_pos) - sample(avguy, combine_int3(i - 1, j, k), max_pos) -
+					sample(avgux, combine_int3(i, j + 1, k), max_pos) + sample(avgux, combine_int3(i, j - 1, k), max_pos)) * 0.5;
 }
 
 static __global__ void ForceKernel(float* f_ux, float* f_uy, float* f_uz, float* f_vortx, float* f_vorty, float* f_vortz, float* f_rho, float* f_tempeture, float dt, float curl_strength, float tempeture_env, float gravity, int3 max_pos)
@@ -399,16 +421,16 @@ static __global__ void ForceKernel(float* f_ux, float* f_uy, float* f_uz, float*
 	float3 vr = combine_float3(sample(f_vortx, combine_int3(i + 1, j, k), max_pos),
 		sample(f_vorty, combine_int3(i + 1, j, k), max_pos),
 		sample(f_vortz, combine_int3(i + 1, j, k), max_pos));
-	float3 vbh = combine_float3(sample(f_vortx, combine_int3(i, j - 1, k), max_pos),
+	float3 vbo = combine_float3(sample(f_vortx, combine_int3(i, j - 1, k), max_pos),
 		sample(f_vorty, combine_int3(i, j - 1, k), max_pos),
 		sample(f_vortz, combine_int3(i, j - 1, k), max_pos));
-	float3 vf = combine_float3(sample(f_vortx, combine_int3(i, j + 1, k), max_pos),
+	float3 vt = combine_float3(sample(f_vortx, combine_int3(i, j + 1, k), max_pos),
 		sample(f_vorty, combine_int3(i, j + 1, k), max_pos),
 		sample(f_vortz, combine_int3(i, j + 1, k), max_pos));
-	float3 vbo = combine_float3(sample(f_vortx, combine_int3(i, j, k - 1), max_pos),
+	float3 vbh = combine_float3(sample(f_vortx, combine_int3(i, j, k - 1), max_pos),
 		sample(f_vorty, combine_int3(i, j, k - 1), max_pos),
 		sample(f_vortz, combine_int3(i, j, k - 1), max_pos));
-	float3 vt = combine_float3(sample(f_vortx, combine_int3(i, j, k + 1), max_pos),
+	float3 vf = combine_float3(sample(f_vortx, combine_int3(i, j, k + 1), max_pos),
 		sample(f_vorty, combine_int3(i, j, k + 1), max_pos),
 		sample(f_vortz, combine_int3(i, j, k + 1), max_pos));
 	float3 vc = combine_float3(sample(f_vortx, combine_int3(i, j, k), max_pos),
@@ -416,18 +438,21 @@ static __global__ void ForceKernel(float* f_ux, float* f_uy, float* f_uz, float*
 		sample(f_vortz, combine_int3(i, j, k), max_pos));
 
 	// ¦Ç = ¨Œ|¦Ø|, N = ¦Ç/|¦Ç|
-	float3 force_vort = normalize(combine_float3(abs(length(vr)) - abs(length(vl)), abs(length(vf)) - abs(length(vbh)), abs(length(vt)) - abs(length(vbo))));
+	float3 force_vort = normalize(combine_float3(length(vr) - length(vl), length(vt) - length(vbo), length(vf) - length(vbh)));
 	// f_conf(vort) = ¦Åh(N¡Á¦Ø)
-	float3 fvort = curl_strength * cross(force_vort, vc);
+	float3 fvort = curl_strength * cross(vc, force_vort);
 
-	float buoyancy = -(gravity * f_rho[ind]) * 0.01f + (f_tempeture[ind] - tempeture_env) * 5.f;
+	float buoyancy = -(gravity * f_rho[ind]) * 0.1f + (f_tempeture[ind] - tempeture_env) * 5.f;
+	//float buoyancy = 0.f;
 
 	f_ux[ind] += fvort.x * dt;
 	f_uy[ind] += (fvort.y + buoyancy) * dt;
 	f_uz[ind] += fvort.z * dt;
 }
 
-// -Ax = -b, r0 = -b = -¨Œ¡¤u
+// -6p + ¦²p_neibor = ¨Œ¡¤u
+// Ap = -¨Œ¡¤u, Ap = 6p - ¦²p_neibor, b = -¨Œ¡¤u
+// r = b - Ax, assume x = 0 in the beginning
 static __global__ void InitConjugate(float* r, float* f_div, float* x)
 {
 	size_t i = threadIdx.x;
@@ -436,7 +461,7 @@ static __global__ void InitConjugate(float* r, float* f_div, float* x)
 	size_t ind = i + j * blockDim.x + k * blockDim.x * gridDim.x;
 
 	r[ind] = -f_div[ind];
-	x[ind] = 0;
+	x[ind] = 0.f;
 }
 
 // p here is conjugate gradient, not pressure
@@ -449,7 +474,7 @@ static __global__ void ComputeAp(float* Ap, float* p, int3 max_pos)
 
 	float pc = cg_sample(p, combine_int3(i, j, k), max_pos);
 
-	Ap[ind] = 6.f * pc - neibor_sum(p, ind, 0, max_pos);
+	Ap[ind] = 6.f * pc - neibor_sum(p, i, j, k, max_pos);
 }
 
 static __global__ void UpdateResidual(float* r, float* p, float* Ap, float* x, float alpha)
@@ -480,10 +505,10 @@ static __global__ void Restrict(float* r, float* z, int offset, int3 max_pos)
 	size_t k = blockIdx.y;
 	size_t ind = i + j * blockDim.x + k * blockDim.x * gridDim.x;
 
-	float res = r[offset + ind] - (6 * z[offset + ind] - neibor_sum(z, ind, offset, max_pos));
+	float res = r[offset + ind] - (6 * z[offset + ind] - neibor_sum(z + offset, i, j, k, max_pos));
 	// r[l+1][pos//2] += res * 0.5
 	offset += max_pos.x * max_pos.y * max_pos.z;
-	size_t new_ind = i >> 2 + (j >> 2) * (max_pos.x >> 2) + (k >> 2) * (max_pos.x >> 2) * (max_pos.y >> 2);
+	size_t new_ind = i >> 1 + (j >> 1) * (max_pos.x >> 1) + (k >> 1) * (max_pos.x >> 1) * (max_pos.y >> 1);
 	r[offset + new_ind] += res * 0.5;
 }
 
@@ -495,7 +520,7 @@ static __global__ void Prolongate(float* z, int offset, int3 max_pos)
 	size_t ind = i + j * blockDim.x + k * blockDim.x * gridDim.x;
 
 	// r[l][pos] = r[l+1][pos//2]
-	size_t new_ind = i >> 2 + (j >> 2) * (max_pos.x >> 2) + (k >> 2) * (max_pos.x >> 2) * (max_pos.y >> 2);
+	size_t new_ind = i >> 1 + (j >> 1) * (max_pos.x >> 1) + (k >> 1) * (max_pos.x >> 1) * (max_pos.y >> 1);
 	z[offset + ind] += z[offset + max_pos.x * max_pos.y * max_pos.z + new_ind];
 }
 
@@ -509,7 +534,7 @@ static __global__ void Smooth(float* r, float* z, int offset, bool phase, int3 m
 	// red/black Gauss Seidel
 	if (bool((i + j + k) & 1) == phase)
 	{
-		z[offset + ind] = (r[offset + ind] + neibor_sum(z, ind, offset, max_pos)) / 6.f;
+		z[offset + ind] = (r[offset + ind] + neibor_sum(z + offset, i, j, k, max_pos)) / 6.f;
 	}
 }
 
@@ -528,6 +553,9 @@ void Solver::InitCuda()
 	checkCudaErrors(cudaMalloc((void**)&f_pressure, nx * ny * nz * sizeof(float)));
 	checkCudaErrors(cudaMalloc((void**)&f_new_pressure, nx * ny * nz * sizeof(float)));
 	checkCudaErrors(cudaMalloc((void**)&f_div, nx * ny * nz * sizeof(float)));
+	checkCudaErrors(cudaMalloc((void**)&f_avgux, nx * ny * nz * sizeof(float)));
+	checkCudaErrors(cudaMalloc((void**)&f_avguy, nx * ny * nz * sizeof(float)));
+	checkCudaErrors(cudaMalloc((void**)&f_avguz, nx * ny * nz * sizeof(float)));
 	checkCudaErrors(cudaMalloc((void**)&f_vortx, nx * ny * nz * sizeof(float)));
 	checkCudaErrors(cudaMalloc((void**)&f_vorty, nx * ny * nz * sizeof(float)));
 	checkCudaErrors(cudaMalloc((void**)&f_vortz, nx * ny * nz * sizeof(float)));
@@ -553,6 +581,9 @@ void Solver::InitCuda()
 	checkCudaErrors(cudaMemset(f_pressure, 0, nx * ny * nz * sizeof(float)));
 	checkCudaErrors(cudaMemset(f_new_pressure, 0, nx * ny * nz * sizeof(float)));
 	checkCudaErrors(cudaMemset(f_div, 0, nx * ny * nz * sizeof(float)));
+	checkCudaErrors(cudaMemset(f_avgux, 0, nx * ny * nz * sizeof(float)));
+	checkCudaErrors(cudaMemset(f_avguy, 0, nx * ny * nz * sizeof(float)));
+	checkCudaErrors(cudaMemset(f_avguz, 0, nx * ny * nz * sizeof(float)));
 	checkCudaErrors(cudaMemset(f_vortx, 0, nx * ny * nz * sizeof(float)));
 	checkCudaErrors(cudaMemset(f_vorty, 0, nx * ny * nz * sizeof(float)));
 	checkCudaErrors(cudaMemset(f_vortz, 0, nx * ny * nz * sizeof(float)));
@@ -581,6 +612,9 @@ void Solver::FreeCuda()
 	checkCudaErrors(cudaFree(f_pressure));
 	checkCudaErrors(cudaFree(f_new_pressure));
 	checkCudaErrors(cudaFree(f_div));
+	checkCudaErrors(cudaFree(f_avgux));
+	checkCudaErrors(cudaFree(f_avguy));
+	checkCudaErrors(cudaFree(f_avguz));
 	checkCudaErrors(cudaFree(f_vortx));
 	checkCudaErrors(cudaFree(f_vorty));
 	checkCudaErrors(cudaFree(f_vortz));
@@ -609,7 +643,7 @@ void Solver::UpdateCuda()
 	// add source
 	SourceKernel << <dim3(ny, nz), nx >> > (f_rho, f_tempeture, f_ux, f_uy, f_uz, rho, tempeture, tempeture_env, u);
 	// add force
-	VorticityKernel << <dim3(ny, nz), nx >> > (f_vortx, f_vorty, f_vortz, f_ux, f_uy, f_uz, max_pos);
+	VorticityKernel << <dim3(ny, nz), nx >> > (f_vortx, f_vorty, f_vortz, f_ux, f_uy, f_uz, f_avgux, f_avguy, f_avguz, max_pos);
 	ForceKernel << <dim3(ny, nz), nx >> > (f_ux, f_uy, f_uz, f_vortx, f_vorty, f_vortz, f_rho, f_tempeture, dt, curl_strength, tempeture_env, gravity, max_pos);
 	// velocity advection
 	SemiLagKernel << <dim3(ny, nz), nx >> > (f_ux, f_new_ux, f_ux, f_uy, f_uz, dt, max_pos);
@@ -632,9 +666,11 @@ void Solver::UpdateCuda()
 	{
 		JacobiKernel << <dim3(ny, nz), nx >> > (f_pressure, f_new_pressure, f_div, r, max_pos);
 		swap(&f_pressure, &f_new_pressure);
-		//aTb << <1, 1 >> > (r, r,d_temp_res, max_pos);
-		//checkCudaErrors(cudaMemcpy(&rTr, d_temp_res, sizeof(float), cudaMemcpyDeviceToHost));
-		//std::cout << "iter " << i << " rTr: " << rTr << std::endl;
+
+		Mul << <dim3(ny, nz), nx >> > (r, r, temp);
+		Reduce();
+		checkCudaErrors(cudaMemcpy(&init_rTr, &temp[0], sizeof(float), cudaMemcpyDeviceToHost));
+		std::cout << "iter " << i << " residual: " << init_rTr << std::endl;
 	}
 #else
 	Conjugate();
@@ -696,7 +732,6 @@ void Solver::Conjugate()
 
 	// aTb operator, calc the sum of each block and then reduce all the data
 	// note that the number of thread in each block cannot exceed 1024
-	// the number here should self-adapte to the amount of euler girds, here is 64*64*256, should be modified whenever grid size is changed
 	Mul << <dim3(ny, nz), nx >> > (r, r, temp);
 	Reduce();
 	checkCudaErrors(cudaMemcpy(&init_rTr, &temp[0], sizeof(float), cudaMemcpyDeviceToHost));
@@ -716,7 +751,7 @@ void Solver::Conjugate()
 	Reduce();
 	checkCudaErrors(cudaMemcpy(&old_zTr, &temp[0], sizeof(float), cudaMemcpyDeviceToHost));
 
-	for (int i = 0; i < 30; ++i)
+	for (int i = 0; i < max_iter; ++i)
 	{
 		// ¦Á(k) = r(k)Tr(k) / p(k)TAp(k)
 		ComputeAp << <dim3(ny, nz), nx >> > (Ap, p, max_pos);
@@ -735,7 +770,7 @@ void Solver::Conjugate()
 		std::cout << "iter " << i << " rTr: " << rTr << std::endl;
 
 		// early stop
-		if (rTr < init_rTr * 1e-14 || rTr * 10 > last_rTr || rTr == 0)
+		if (rTr < init_rTr * 1e-14/* || rTr * 5 > last_rTr */|| rTr == 0)
 			break;
 
 #if MGPCG
@@ -770,8 +805,8 @@ void Solver::MG_Preconditioner()
 	int offset = 0;
 
 	// initialize z[l] and r[l] with 0 except r[0]
-	Fill << <1, mg_space >> > (z, 0, 0);
-	Fill << <1, mg_space - r_offset >> > (r, r_offset, 0);	
+	Fill << <1, mg_space >> > (z, 0);
+	Fill << <1, mg_space - r_offset >> > (r + r_offset, 0);
 
 	// downsample
 	for (int l = 0; l < mg_level - 1; ++l)
