@@ -222,7 +222,7 @@ static __global__ void Mul(float* a, float* b, float* res)
 
 static __global__ void GlobalReduce(float* res)
 {
-	 __shared__ float sdata[1024];
+	__shared__ float sdata[1024];
 	size_t tid = threadIdx.x;
 	size_t j = blockIdx.x;
 	size_t k = blockIdx.y;
@@ -387,7 +387,7 @@ static __global__ void ApplyGradient(float* f_ux, float* f_uy, float* f_uz, floa
 }
 
 // ¦Ø = ¨Œ¡Áu
-static __global__ void VorticityKernel(float* f_vortx, float* f_vorty, float* f_vortz, float* ux, float* uy, float* uz, float* avgux, float* avguy, float* avguz,int3 max_pos)
+static __global__ void VorticityKernel(float* f_vortx, float* f_vorty, float* f_vortz, float* ux, float* uy, float* uz, float* avgux, float* avguy, float* avguz, int3 max_pos)
 {
 	size_t i = threadIdx.x;
 	size_t j = blockIdx.x;
@@ -401,11 +401,11 @@ static __global__ void VorticityKernel(float* f_vortx, float* f_vorty, float* f_
 	__syncthreads();
 
 	f_vortx[ind] = (sample(avguz, combine_int3(i, j + 1, k), max_pos) - sample(avguz, combine_int3(i, j - 1, k), max_pos) -
-					sample(avguy, combine_int3(i, j, k + 1), max_pos) + sample(avguy, combine_int3(i, j, k - 1), max_pos)) * 0.5;
+		sample(avguy, combine_int3(i, j, k + 1), max_pos) + sample(avguy, combine_int3(i, j, k - 1), max_pos)) * 0.5;
 	f_vorty[ind] = (sample(avgux, combine_int3(i, j, k + 1), max_pos) - sample(avgux, combine_int3(i, j, k - 1), max_pos) -
-					sample(avguz, combine_int3(i + 1, j, k), max_pos) + sample(avguz, combine_int3(i - 1, j, k), max_pos)) * 0.5;
+		sample(avguz, combine_int3(i + 1, j, k), max_pos) + sample(avguz, combine_int3(i - 1, j, k), max_pos)) * 0.5;
 	f_vortz[ind] = (sample(avguy, combine_int3(i + 1, j, k), max_pos) - sample(avguy, combine_int3(i - 1, j, k), max_pos) -
-					sample(avgux, combine_int3(i, j + 1, k), max_pos) + sample(avgux, combine_int3(i, j - 1, k), max_pos)) * 0.5;
+		sample(avgux, combine_int3(i, j + 1, k), max_pos) + sample(avgux, combine_int3(i, j - 1, k), max_pos)) * 0.5;
 }
 
 static __global__ void ForceKernel(float* f_ux, float* f_uy, float* f_uz, float* f_vortx, float* f_vorty, float* f_vortz, float* f_rho, float* f_tempeture, float dt, float curl_strength, float tempeture_env, float gravity, int3 max_pos)
@@ -498,18 +498,18 @@ static __global__ void UpdateP(float* p, float* z, float beta)
 	p[ind] = z[ind] + beta * p[ind];
 }
 
-static __global__ void Restrict(float* r, float* z, int offset, int3 max_pos)
+static __global__ void SubRestrict(float* r, float* z, int offset, int3 max_pos, int phase)
 {
-	size_t i = threadIdx.x;
-	size_t j = blockIdx.x;
-	size_t k = blockIdx.y;
-	size_t ind = i + j * blockDim.x + k * blockDim.x * gridDim.x;
+	size_t new_ind = threadIdx.x + blockIdx.x * blockDim.x + blockIdx.y * blockDim.x * gridDim.x;
+
+	size_t i = threadIdx.x * 2 + ((phase & 1) ? 1 : 0);
+	size_t j = blockIdx.x * 2 + ((phase & 2) ? 1 : 0);
+	size_t k = blockIdx.y * 2 + ((phase & 4) ? 1 : 0);
+	size_t ind = i + j * max_pos.x + k * max_pos.x * max_pos.y;
 
 	float res = r[offset + ind] - (6 * z[offset + ind] - neibor_sum(z + offset, i, j, k, max_pos));
 	// r[l+1][pos//2] += res * 0.5
-	offset += max_pos.x * max_pos.y * max_pos.z;
-	size_t new_ind = i >> 1 + (j >> 1) * (max_pos.x >> 1) + (k >> 1) * (max_pos.x >> 1) * (max_pos.y >> 1);
-	r[offset + new_ind] += res * 0.5;
+	r[offset + max_pos.x * max_pos.y * max_pos.z + new_ind] += res * 0.5;
 }
 
 static __global__ void Prolongate(float* z, int offset, int3 max_pos)
@@ -519,8 +519,8 @@ static __global__ void Prolongate(float* z, int offset, int3 max_pos)
 	size_t k = blockIdx.y;
 	size_t ind = i + j * blockDim.x + k * blockDim.x * gridDim.x;
 
-	// r[l][pos] = r[l+1][pos//2]
-	size_t new_ind = i >> 1 + (j >> 1) * (max_pos.x >> 1) + (k >> 1) * (max_pos.x >> 1) * (max_pos.y >> 1);
+	// r[l][pos] += r[l+1][pos//2]
+	size_t new_ind = (i >> 1) + (j >> 1) * (max_pos.x >> 1) + (k >> 1) * (max_pos.x >> 1) * (max_pos.y >> 1);
 	z[offset + ind] += z[offset + max_pos.x * max_pos.y * max_pos.z + new_ind];
 }
 
@@ -536,6 +536,23 @@ static __global__ void Smooth(float* r, float* z, int offset, bool phase, int3 m
 	{
 		z[offset + ind] = (r[offset + ind] + neibor_sum(z + offset, i, j, k, max_pos)) / 6.f;
 	}
+}
+
+void Solver::Restrict(int offset, int max_pos_x, int max_pos_y, int max_pos_z)
+{
+	int3 max_pos;
+	max_pos.x = max_pos_x;
+	max_pos.y = max_pos_y;
+	max_pos.z = max_pos_z;
+	// void write conflict
+	SubRestrict << <dim3(max_pos.y / 2, max_pos.z / 2), max_pos.x / 2 >> > (r, z, offset, max_pos, 0);
+	SubRestrict << <dim3(max_pos.y / 2, max_pos.z / 2), max_pos.x / 2 >> > (r, z, offset, max_pos, 1);
+	SubRestrict << <dim3(max_pos.y / 2, max_pos.z / 2), max_pos.x / 2 >> > (r, z, offset, max_pos, 2);
+	SubRestrict << <dim3(max_pos.y / 2, max_pos.z / 2), max_pos.x / 2 >> > (r, z, offset, max_pos, 3);
+	SubRestrict << <dim3(max_pos.y / 2, max_pos.z / 2), max_pos.x / 2 >> > (r, z, offset, max_pos, 4);
+	SubRestrict << <dim3(max_pos.y / 2, max_pos.z / 2), max_pos.x / 2 >> > (r, z, offset, max_pos, 5);
+	SubRestrict << <dim3(max_pos.y / 2, max_pos.z / 2), max_pos.x / 2 >> > (r, z, offset, max_pos, 6);
+	SubRestrict << <dim3(max_pos.y / 2, max_pos.z / 2), max_pos.x / 2 >> > (r, z, offset, max_pos, 7);
 }
 
 void Solver::InitCuda()
@@ -561,7 +578,6 @@ void Solver::InitCuda()
 	checkCudaErrors(cudaMalloc((void**)&f_vortz, nx * ny * nz * sizeof(float)));
 	checkCudaErrors(cudaMalloc((void**)&r, mg_space * sizeof(float)));
 	checkCudaErrors(cudaMalloc((void**)&z, mg_space * sizeof(float)));
-	checkCudaErrors(cudaMalloc((void**)&new_z, mg_space * sizeof(float)));
 	checkCudaErrors(cudaMalloc((void**)&p, nx * ny * nz * sizeof(float)));
 	checkCudaErrors(cudaMalloc((void**)&Ap, nx * ny * nz * sizeof(float)));
 	checkCudaErrors(cudaMalloc((void**)&x, nx * ny * nz * sizeof(float)));
@@ -589,7 +605,6 @@ void Solver::InitCuda()
 	checkCudaErrors(cudaMemset(f_vortz, 0, nx * ny * nz * sizeof(float)));
 	checkCudaErrors(cudaMemset(r, 0, mg_space * sizeof(float)));
 	checkCudaErrors(cudaMemset(z, 0, mg_space * sizeof(float)));
-	checkCudaErrors(cudaMemset(new_z, 0, mg_space * sizeof(float)));
 	checkCudaErrors(cudaMemset(p, 0, nx * ny * nz * sizeof(float)));
 	checkCudaErrors(cudaMemset(Ap, 0, nx * ny * nz * sizeof(float)));
 	checkCudaErrors(cudaMemset(x, 0, nx * ny * nz * sizeof(float)));
@@ -620,7 +635,6 @@ void Solver::FreeCuda()
 	checkCudaErrors(cudaFree(f_vortz));
 	checkCudaErrors(cudaFree(r));
 	checkCudaErrors(cudaFree(z));
-	checkCudaErrors(cudaFree(new_z));
 	checkCudaErrors(cudaFree(p));
 	checkCudaErrors(cudaFree(Ap));
 	checkCudaErrors(cudaFree(x));
@@ -770,7 +784,7 @@ void Solver::Conjugate()
 		std::cout << "iter " << i << " rTr: " << rTr << std::endl;
 
 		// early stop
-		if (rTr < init_rTr * 1e-14/* || rTr * 5 > last_rTr */|| rTr == 0)
+		if (rTr < init_rTr * 1e-12 || rTr == 0)
 			break;
 
 #if MGPCG
@@ -801,12 +815,14 @@ void Solver::MG_Preconditioner()
 	max_pos.y = ny;
 	max_pos.z = nz;
 
-	int r_offset = nx * ny * nz;
-	int offset = 0;
+	size_t r_offset = nx * ny * nz;
+	size_t offset = 0;
 
 	// initialize z[l] and r[l] with 0 except r[0]
-	Fill << <1, mg_space >> > (z, 0);
-	Fill << <1, mg_space - r_offset >> > (r + r_offset, 0);
+	//Fill << <dim3(585, 8), 1024 >> > (z, 0);
+	//Fill << <dim3(73, 8), 1024 >> > (r + r_offset, 0);
+	Fill << <dim3(585, 2), 1024 >> > (z, 0);
+	Fill << <dim3(73, 2), 1024 >> > (r + r_offset, 0);
 
 	// downsample
 	for (int l = 0; l < mg_level - 1; ++l)
@@ -816,7 +832,7 @@ void Solver::MG_Preconditioner()
 			Smooth << <dim3(max_pos.y, max_pos.z), max_pos.x >> > (r, z, offset, 0, max_pos);
 			Smooth << <dim3(max_pos.y, max_pos.z), max_pos.x >> > (r, z, offset, 1, max_pos);
 		}
-		Restrict << <dim3(max_pos.y, max_pos.z), max_pos.x >> > (r, z, offset, max_pos);
+		Restrict(offset, max_pos.x, max_pos.y, max_pos.z);
 
 		offset += max_pos.x * max_pos.y * max_pos.z;
 		max_pos.x = max_pos.x >> 1;

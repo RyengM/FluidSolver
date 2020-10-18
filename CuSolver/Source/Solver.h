@@ -20,6 +20,8 @@ public:
 
 	void Reduce();
 
+	void Restrict(int offset, int max_pos_x, int max_pos_y, int max_pos_z);
+
 	void Conjugate();
 
 	// multi grid preconditioner, to make M^-1Ax = M^-1b which has a smaller condition number in order to accelerate rate of convergence
@@ -89,7 +91,6 @@ private:
 	// conjugae variables
 	float* r;						// residual
 	float* z;						// M^-1 r
-	float* new_z;					// M^-1 r, for red/black Gauss Seidel
 	float* p;						// conjugate gradient
 	float* Ap;						// matrix-vector product
 	float* x;						// solution
