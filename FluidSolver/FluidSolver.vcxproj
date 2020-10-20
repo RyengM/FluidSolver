@@ -177,7 +177,6 @@
     <ClInclude Include="Source\Camera.h" />
     <ClInclude Include="Source\Objects.h" />
     <ClInclude Include="Source\FluidSolver.h" />
-    <ClInclude Include="Source\Light.h" />
     <ClInclude Include="Source\Shader.h" />
   </ItemGroup>
   <ItemGroup>
@@ -185,7 +184,6 @@
     <ClCompile Include="Source\Objects.cpp" />
     <ClCompile Include="Source\FluidSolver.cpp" />
     <ClCompile Include="Source\glad.c" />
-    <ClCompile Include="Source\Light.cpp" />
     <ClCompile Include="Source\main.cpp" />
     <ClCompile Include="Source\Shader.cpp" />
   </ItemGroup>

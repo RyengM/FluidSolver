@@ -50,9 +50,6 @@
     <ClInclude Include="Source\Camera.h">
       <Filter>HeadFiles</Filter>
     </ClInclude>
-    <ClInclude Include="Source\Light.h">
-      <Filter>HeadFiles</Filter>
-    </ClInclude>
     <ClInclude Include="Source\Objects.h">
       <Filter>HeadFiles</Filter>
     </ClInclude>
@@ -71,9 +68,6 @@
       <Filter>SourceFiles</Filter>
     </ClCompile>
     <ClCompile Include="Source\Camera.cpp">
-      <Filter>SourceFiles</Filter>
-    </ClCompile>
-    <ClCompile Include="Source\Light.cpp">
       <Filter>SourceFiles</Filter>
     </ClCompile>
     <ClCompile Include="Source\Objects.cpp">
