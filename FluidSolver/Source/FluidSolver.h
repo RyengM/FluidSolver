@@ -26,8 +26,6 @@ public:
 	void ProcessInput(GLFWwindow *window);
 
 public:
-	// we assume there is always one camera now, so it is only a decorate now, which will be used later, maybe
-	// so the settings about camera is global now, don't care
 	Camera camera;
 	FluidObject fluidObject;
 	Ball ball;

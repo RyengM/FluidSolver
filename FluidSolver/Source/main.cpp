@@ -11,7 +11,7 @@ int main()
 	FluidObject fluid(glm::vec3(0, 0, 0), glm::vec3(Nx / 200.f, Ny / 200.f, Nz / 200.f));
 	scene.fluidObject = std::move(fluid);
 
-	Ball ball(glm::vec3(0, 0.16, 0), 0.04);
+	Ball ball(glm::vec3(0, 0.16, 0), 0.04f);
 	scene.ball = std::move(ball);
 
 	scene.Render();
