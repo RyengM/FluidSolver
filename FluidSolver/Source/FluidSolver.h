@@ -6,7 +6,7 @@
 #include "Objects.h"
 
 #define Nx 64
-#define Ny 256
+#define Ny 512
 #define Nz 64
 
 // actually a scene to manage the objects in it, especially for fluids

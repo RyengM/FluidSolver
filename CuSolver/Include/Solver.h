@@ -9,14 +9,18 @@
 class SOLVER_API Solver
 {
 public:
-	Solver(int nx, int ny, int nz, float rho, float tempeture, float tempeture_env, int max_iter, float dt, float curl_strength, float vel_x, float vel_y, float vel_z) :
-		nx(nx), ny(ny), nz(nz), rho(rho), tempeture(tempeture), tempeture_env(tempeture_env), max_iter(max_iter), dt(dt), curl_strength(curl_strength), vel_x(vel_x), vel_y(vel_y), vel_z(vel_z) {};
+	Solver(int nx, int ny, int nz, float rho, float temperature, float temperature_env, int max_iter, float dt, float curl_strength, float vel_x, float vel_y, float vel_z) :
+		nx(nx), ny(ny), nz(nz), rho(rho), temperature(temperature), temperature_env(temperature_env), max_iter(max_iter), dt(dt), curl_strength(curl_strength), vel_x(vel_x), vel_y(vel_y), vel_z(vel_z) {};
 	
 	~Solver();
 
 	void Initialize();
 
 	void Update();
+
+	void Advect();
+
+	void Project();
 
 	void Reduce();
 
@@ -44,8 +48,8 @@ private:
 	// initial density
 	float rho = 0;
 	// initial tempture
-	float tempeture = 0;
-	float tempeture_env = 0;
+	float temperature = 0;
+	float temperature_env = 0;
 	// gravity
 	float gravity = 9.8f;
 	int max_iter = 0;
@@ -72,9 +76,9 @@ private:
 	// density field
 	float* f_rho;
 	float* f_new_rho;
-	// tempeture field
-	float* f_tempeture;
-	float* f_new_tempeture;
+	// temperature field
+	float* f_temperature;
+	float* f_new_temperature;
 	// pressure field
 	float* f_pressure;
 	float* f_new_pressure;

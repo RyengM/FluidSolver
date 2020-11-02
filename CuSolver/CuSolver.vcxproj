@@ -96,6 +96,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Include\CudaUnitility.h" />
+    <ClInclude Include="Include\Math.cuh" />
     <ClInclude Include="Include\Solver.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
