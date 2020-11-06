@@ -1,4 +1,4 @@
-#include "CudaUnitility.h"
+#include "CudaUtility.h"
 
 static __device__ int3 combine_int3(int a, int b, int c)
 {

@@ -6,6 +6,18 @@
 #define SOLVER_API _declspec(dllimport)
 #endif
 
+struct Particle
+{
+	// position
+	float px = 0;
+	float py = 0;
+	float pz = 0;
+	// velocity
+	float ux = 0;
+	float uy = 0;
+	float uz = 0;
+};
+
 class SOLVER_API Solver
 {
 public:
@@ -34,7 +46,10 @@ public:
 	float* GetDensityField();
 
 private:
+	// allocate memory
 	void InitCuda();
+	// init the param which should be initialized once
+	void InitParam();
 
 	void UpdateCuda();
 
@@ -84,14 +99,6 @@ private:
 	float* f_new_pressure;
 	// divergence field
 	float* f_div;
-	// average velocity field
-	float* f_avgux;
-	float* f_avguy;
-	float* f_avguz;
-	// vorticity field
-	float* f_vortx;
-	float* f_vorty;
-	float* f_vortz;
 	// conjugae variables
 	float* r;						// residual
 	float* z;						// M^-1 r
@@ -102,6 +109,9 @@ private:
 
 	// temp variable, used for data transfer from device to host, the length of the array is one
 	float* d_temp_res;
+
+	// particle information
+	Particle* f_particle;
 
 private:
 	// Host
