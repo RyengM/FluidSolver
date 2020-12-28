@@ -92,24 +92,18 @@ void main()
 	float boxThickness = max(0, t1 - t0);
 	vec3 entryPos = cameraPos + t0 * ray.dir;
 
-	float shadowSteps = 64.f;
-	float raymarchStep = 512.f;
+	// ray march steps per unit distance, assume a unit distance contains 50 voxels
+	float raymarchStep = 100.f;
 	// ensure ray can walk through the volume
 	int maxSteps = int(raymarchStep * length(2 * objectOffset)) + 1;
 
-	vec3 lightVec = normalize(vec3(0, -1, -1));
-	lightVec *= 1.f / shadowSteps * 0.5;
 	vec3 localCamVec = ray.dir / raymarchStep / (2.f * objectOffset);
 
 	// convert the sample range to 0-1
 	vec3 curPos = (entryPos - objectPos + objectOffset) / (2.f * objectOffset);
-	float curDensity = 0;
-	float density = 64;
-	float shadowDensity = 32;
 	vec3 lightEnergy = vec3(0, 0, 0);
 	float transmittance = 1;
-	vec3 lightColor = vec3(0.6, 0.6, 0.6);
-	float shadowThresh = 0.05;
+	vec3 lightColor = vec3(0.584f, 0.514f, 0.451f);
 	vec3 lightPos = vec3(0.f, 1.f, 0.4f);
 
 	for (int i = 0; i < maxSteps; ++i)
@@ -144,7 +138,7 @@ void main()
 				lightPos += lightDir;
 			}
 
-			vec3 lightE = vec3(0.584f, 0.514f, 0.451f) * transmittanceLight;
+			vec3 lightE = lightColor * transmittanceLight;
 
 			lightEnergy += lightE * cursample * transmittance;
 		}

@@ -1,5 +1,7 @@
 #include "CudaUtility.h"
 
+#define PI 3.1415926535
+
 static __device__ int3 combine_int3(int a, int b, int c)
 {
 	int3 res;
@@ -53,6 +55,24 @@ static __device__ float3 cross(float3 a, float3 b)
 static __device__ float lerp(float a, float b, float s)
 {
 	return a * (1 - s) + b * s;
+}
+
+static __device__ float getRandom(unsigned int *seed0, unsigned int *seed1) {
+	// hash the seeds using bitwise AND and bitshifts
+	*seed0 = 36969 * ((*seed0) & 65535) + ((*seed0) >> 16);
+	*seed1 = 18000 * ((*seed1) & 65535) + ((*seed1) >> 16);
+
+	unsigned int ires = ((*seed0) << 16) + (*seed1);
+
+	// convert to float
+	union {
+		float f;
+		unsigned int ui;
+	} res;
+
+	res.ui = (ires & 0x007fffff) | 0x40000000;
+
+	return (res.f - 2.f) / 2.f;
 }
 
 static __device__ float3 operator*(float a, float3 b)
@@ -118,4 +138,9 @@ static __device__ int3 operator+(int3 a, int3 b)
 	a.y += b.y;
 	a.z += b.z;
 	return a;
+}
+
+static __device__ float3 floor(float3 a)
+{
+	return combine_float3(floor(a.x), floor(a.y), floor(a.z));
 }

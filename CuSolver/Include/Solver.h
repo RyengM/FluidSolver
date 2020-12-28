@@ -6,18 +6,6 @@
 #define SOLVER_API _declspec(dllimport)
 #endif
 
-struct Particle
-{
-	// position
-	float px = 0;
-	float py = 0;
-	float pz = 0;
-	// velocity
-	float ux = 0;
-	float uy = 0;
-	float uz = 0;
-};
-
 class SOLVER_API Solver
 {
 public:
@@ -33,7 +21,10 @@ public:
 	void Advect();
 
 	void Project();
+	
+	void Scatter();
 
+	// accelerate aTb operation
 	void Reduce();
 
 	void Restrict(int offset, int max_pos_x, int max_pos_y, int max_pos_z);
@@ -78,6 +69,15 @@ private:
 	float vel_z = 0;
 	// frame
 	int current_frame = 0;
+	// grid stride, used for converting particle from world space to grid index space
+	float grid_stride = 0.1f;
+	// source param
+	float source_pos_x = 3.2f;
+	float source_pos_y = 0.f;
+	float source_pos_z = 3.2f;
+	float source_radius = 1.0f;
+	// the probability of particle awake
+	float threshold = 0.f;
 
 private:
 	// Device
@@ -85,6 +85,8 @@ private:
 	float* f_ux;
 	float* f_uy;
 	float* f_uz;
+	// f_new_u in eulerian is used for alternate calculation
+	// and in lagrangian is used for accounting the weight of grid
 	float* f_new_ux;
 	float* f_new_uy;
 	float* f_new_uz;
@@ -111,13 +113,28 @@ private:
 	float* d_temp_res;
 
 	// particle information
-	Particle* f_particle;
-
+	// note that the base world space coordinate in solver is (0, 0, 0)
+	// so that particle position can be converted to voxel space immediately
+	// mass
+	float* p_mass;
+	// position
+	float* p_px;
+	float* p_py;
+	float* p_pz;
+	// velocity
+	float* p_ux;
+	float* p_uy;
+	float* p_uz;
+	// when age equals 0, the particle is sleep
+	// otherwise the particle is generated and flow with smoke
+	float* p_age;
+	
 private:
 	// Host
 	// density field
 	float* f_density;
 
+	// variants for conjugate gradient
 	int mg_level = 4;				// multi grid level
 	int mg_space = 0;				// space needed to be allocated for multi grid
 	int init_smooth_steps = 2;		// smooth steps for finest grid
