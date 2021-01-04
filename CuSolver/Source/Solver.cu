@@ -8,6 +8,7 @@
 #define MACCORMACK 1
 #define REFLECT 0
 // 0: pure eulerian method, 1: PIC, 2: FLIP, 3: APIC
+// note that euler-lagrangian method is still in development, so only 0 is available
 #define ADVECT 0
 
 /////////////////////////////
@@ -152,8 +153,10 @@ static __device__ void b_spline_p2g_insert(float* field, float* w_field, float a
 					continue;
 				int index = int(pos.x) + int(pos.y) * max_pos.x + int(pos.z) * max_pos.x * max_pos.y;
 				float weight = w[0][i] * w[1][j] * w[2][k];
-				field[index] += weight * attribute;
-				w_field[index] += weight;
+				atomicAdd(&field[index], weight * attribute);
+				atomicAdd(&w_field[index], weight);
+				/*field[index] += weight * attribute;
+				w_field[index] += weight;*/
 			}
 }
 
@@ -189,7 +192,8 @@ static __device__ void b_spline_g2p_gathering(size_t ind, float* attr, float* fi
 					continue;
 				int index = int(pos.x) + int(pos.y) * max_pos.x + int(pos.z) * max_pos.x * max_pos.y;
 				float weight = w[0][i] * w[1][j] * w[2][k];
-				attr[ind] += weight * field[index];
+				atomicAdd(&attr[ind], weight * field[index]);
+				//attr[ind] += weight * field[index];
 			}
 }
 
@@ -265,6 +269,29 @@ static __global__ void Fill(float* field, float fill)
 	size_t ind = i + j * blockDim.x + k * blockDim.x * gridDim.x;
 
 	field[ind] = fill;
+}
+
+// if there are more collocated values, can be reset in the same kernel
+static __global__ void ResetGridCollocatedValue(float* rho, float* w_rho)
+{
+	size_t i = threadIdx.x;
+	size_t j = blockIdx.x;
+	size_t k = blockIdx.y;
+	size_t ind = i + j * blockDim.x + k * blockDim.x * gridDim.x;
+
+	rho[ind] = 0.f;
+	w_rho[ind] = 0.f;
+}
+
+static __global__ void ResetGridStaggeredValue(float* field, float* w_field)
+{
+	size_t i = threadIdx.x;
+	size_t j = blockIdx.x;
+	size_t k = blockIdx.y;
+	size_t ind = i + j * blockDim.x + k * blockDim.x * gridDim.x;
+
+	field[ind] = 0.f;
+	w_field[ind] = 0.f;
 }
 
 static __global__ void Mul(float* a, float* b, float* res)
@@ -391,7 +418,7 @@ static __global__ void SemiLagKernel(float* field, float* new_field, float* ux, 
 		combine_int3(dir == 1 ? (max_pos_x + 1) : max_pos_x, dir == 2 ? (max_pos_y + 1) : max_pos_y, dir == 3 ? (max_pos_z + 1) : max_pos_z), dir == 0 ? 1 : 0);
 }
 
-// ����u
+// ▽·u
 static __global__ void DivergenceKernel(float* field, float* ux, float* uy, float* uz, int3 max_pos)
 {
 	size_t i = threadIdx.x;
@@ -411,7 +438,7 @@ static __global__ void DivergenceKernel(float* field, float* ux, float* uy, floa
 	field[ind] = div;
 }
 
-// -6p + ��p_neibor = ����u
+// -6p + Σp_neibor = ▽·u
 static __global__ void JacobiKernel(float* field, float* new_field, float* div_field, float* r, int3 max_pos)
 {
 	size_t i = threadIdx.x;
@@ -431,7 +458,7 @@ static __global__ void JacobiKernel(float* field, float* new_field, float* div_f
 	r[ind] = div + 6 * field[ind] - pl - pr - pbh - pf - pbo - pt;
 }
 
-// ����u = 0, apply pressure
+// ▽·u = 0, apply pressure
 static __global__ void ApplyGradientUx(float* ux, float* pressure_field, int3 max_pos)
 {
 	size_t i = threadIdx.x;
@@ -498,12 +525,12 @@ static __global__ void ParticleUpdateKernel(float* p_px, float* p_py, float* p_p
 		unsigned int seed2 = k;
 		unsigned int seed3 = ind;
 		// get chance
-		if (getRandom(&seed0, &seed3) < threshold)
+		if (getRandom(&seed0, &seed1) < threshold)
 		{
 			p_mass[ind] = 0.01f;
 			p_age[ind] += 0.01f;
-			float theta = 2 * PI * getRandom(&seed1, &seed3);
-			float radius = source_radius * getRandom(&seed2, &seed3);
+			float theta = 2 * PI * getRandom(&seed1, &seed0);
+			float radius = source_radius * getRandom(&seed2, &seed0);
 			p_px[ind] = source_pos.x + radius * cos(theta);
 			p_py[ind] = source_pos.y;
 			p_pz[ind] = source_pos.z + radius * sin(theta);
@@ -537,22 +564,25 @@ static __global__ void G2P(float* p_px, float* p_py, float* p_pz, float* p_mass,
 		combine_float3(0.5f, 0.5f, 0.5f), max_pos);
 	// velocity
 	b_spline_g2p_gathering(ind, p_ux, ux, combine_float3(particle_pos_x, particle_pos_y, particle_pos_z),
-		combine_float3(0.5f, 0.5f, 0.5f), max_pos);
+		combine_float3(0.f, 0.5f, 0.5f), max_pos);
 	b_spline_g2p_gathering(ind, p_uy, uy, combine_float3(particle_pos_x, particle_pos_y, particle_pos_z),
-		combine_float3(0.5f, 0.5f, 0.5f), max_pos);
+		combine_float3(0.5f, 0.f, 0.5f), max_pos);
 	b_spline_g2p_gathering(ind, p_uz, uz, combine_float3(particle_pos_x, particle_pos_y, particle_pos_z),
-		combine_float3(0.5f, 0.5f, 0.5f), max_pos);
+		combine_float3(0.5f, 0.5f, 0.f), max_pos);
 }
 
 // TODO. particles need to be re-sorted for reduce convenience
 // particle to grid
-static __global__ void P2G(float* p_px, float* p_py, float* p_pz, float* p_mass, float* p_ux, float* p_uy, float* p_uz,
+static __global__ void P2G(float* p_px, float* p_py, float* p_pz, float* p_mass, float* p_age, float* p_ux, float* p_uy, float* p_uz,
 	float grid_stride, float* rho, float* w_rho, float* ux, float* w_ux, float* uy, float* w_uy, float* uz, float* w_uz, int3 max_pos)
 {
 	size_t i = threadIdx.x;
 	size_t j = blockIdx.x;
 	size_t k = blockIdx.y;
 	size_t ind = i + j * blockDim.x + k * blockDim.x * gridDim.x;
+
+	if (p_age[ind] == 0.f)
+		return;
 
 	float particle_pos_x = p_px[ind] / grid_stride;
 	float particle_pos_y = p_py[ind] / grid_stride;
@@ -562,12 +592,12 @@ static __global__ void P2G(float* p_px, float* p_py, float* p_pz, float* p_mass,
 	b_spline_p2g_insert(rho, w_rho, p_mass[ind], combine_float3(particle_pos_x, particle_pos_y, particle_pos_z),
 		combine_float3(0.5f, 0.5f, 0.5f), max_pos);
 	// velocity
-	//b_spline_p2g_insert(ux, w_ux, p_ux[ind], combine_float3(particle_pos_x, particle_pos_y, particle_pos_z),
-	//	combine_float3(0.f, 0.5f, 0.5f), max_pos);
-	//b_spline_p2g_insert(uy, w_uy, p_uy[ind], combine_float3(particle_pos_x, particle_pos_y, particle_pos_z),
-	//	combine_float3(0.5f, 0.f, 0.5f), max_pos);
-	//b_spline_p2g_insert(uz, w_uz, p_uz[ind], combine_float3(particle_pos_x, particle_pos_y, particle_pos_z),
-	//	combine_float3(0.5f, 0.5f, 0.f), max_pos);
+	b_spline_p2g_insert(ux, w_ux, p_ux[ind], combine_float3(particle_pos_x, particle_pos_y, particle_pos_z),
+		combine_float3(0.f, 0.5f, 0.5f), max_pos);
+	b_spline_p2g_insert(uy, w_uy, p_uy[ind], combine_float3(particle_pos_x, particle_pos_y, particle_pos_z),
+		combine_float3(0.5f, 0.f, 0.5f), max_pos);
+	b_spline_p2g_insert(uz, w_uz, p_uz[ind], combine_float3(particle_pos_x, particle_pos_y, particle_pos_z),
+		combine_float3(0.5f, 0.5f, 0.f), max_pos);
 }
 
 // collocated attributes should be invoked once in order to reduce kernel invocation
@@ -578,7 +608,7 @@ static __global__ void CollocatedWeightDivision(float* rho, float* w_rho)
 	size_t k = blockIdx.y;
 	size_t ind = i + j * blockDim.x + k * blockDim.x * gridDim.x;
 
-	if (w_rho > 0)
+	if (w_rho[ind] > 0)
 	{
 		rho[ind] /= w_rho[ind];
 	}
@@ -591,14 +621,14 @@ static __global__ void StaggeredWeightDivision(float* attr, float* w_attr)
 	size_t k = blockIdx.y;
 	size_t ind = i + j * blockDim.x + k * blockDim.x * gridDim.x;
 
-	if (w_attr > 0)
+	if (w_attr[ind] > 0)
 	{
 		attr[ind] /= w_attr[ind];
 	}
 }
 
-// -6p + ��p_neibor = ����u
-// Ap = -����u, Ap = 6p - ��p_neibor, b = -����u
+// -6p + Σp_neibor = ▽·u
+// Ap = -▽·u, Ap = 6p - Σp_neibor, b = -▽·u
 // r = b - Ax, assume x = 0 in the beginning
 static __global__ void InitConjugate(float* r, float* f_div, float* x)
 {
@@ -813,7 +843,7 @@ void Solver::UpdateCuda()
 	max_pos.z = nz;
 
 	// add force
-	ForceKernelUy << <dim3(ny + 1, nz), nx >> > (f_ux, f_uy, f_uz, f_temperature, dt, temperature_env, gravity, u, max_pos);
+	// ForceKernelUy << <dim3(ny + 1, nz), nx >> > (f_ux, f_uy, f_uz, f_temperature, dt, temperature_env, gravity, u, max_pos);
 	
 	Advect();
 	Project();
@@ -902,13 +932,19 @@ void Solver::Advect()
 	source_pos.y = source_pos_y;
 	source_pos.z = source_pos_z;
 
-	threshold += 0.01;
+	// particle born rate
+	threshold += 0.0001;
 	//G2P << <dim3(ny, nz * 2), nx * 2 >> > (p_px, p_py, p_pz, p_mass, p_ux, p_uy, p_uz, grid_stride, f_rho, f_new_rho,
 	//	f_ux, f_new_ux, f_uy, f_new_uy, f_uz, f_new_uz, max_pos);
 	ParticleUpdateKernel << <dim3(ny, nz * 2), nx * 2 >> > (p_px, p_py, p_pz, p_mass, p_ux, p_uy, p_uz, p_age, 
 		source_pos, dt, source_radius, threshold);
-	P2G << <dim3(ny, nz * 2), nx * 2 >> > (p_px, p_py, p_pz, p_mass, p_ux, p_uy, p_uz, grid_stride, f_rho, f_new_rho,
+	ResetGridValue();
+	P2G << <dim3(ny, nz * 2), nx * 2 >> > (p_px, p_py, p_pz, p_mass, p_age, p_ux, p_uy, p_uz, grid_stride, f_rho, f_new_rho,
 		f_ux, f_new_ux, f_uy, f_new_uy, f_uz, f_new_uz, max_pos);
+	//CollocatedWeightDivision << <dim3(ny, nz), nx >> > (f_rho, f_new_rho);
+	StaggeredWeightDivision << <dim3(ny, nz), nx + 1 >> > (f_ux, f_new_ux);
+	StaggeredWeightDivision << <dim3(ny + 1, nz), nx >> > (f_uy, f_new_uy);
+	StaggeredWeightDivision << <dim3(ny, nz + 1), nx >> > (f_uz, f_new_uz);
 #endif
 }
 
@@ -947,6 +983,14 @@ void Solver::Scatter()
 	max_pos.y = ny;
 	max_pos.z = nz;
 
+}
+
+void Solver::ResetGridValue()
+{
+	ResetGridCollocatedValue << <dim3(ny, nz), nx >> > (f_rho, f_new_rho);
+	ResetGridStaggeredValue << <dim3(ny, nz), nx + 1 >> > (f_ux, f_new_ux);
+	ResetGridStaggeredValue << <dim3(ny + 1, nz), nx >> > (f_uy, f_new_uy);
+	ResetGridStaggeredValue << <dim3(ny, nz + 1), nx >> > (f_uz, f_new_uz);
 }
 
 void Solver::Reduce()
@@ -995,14 +1039,14 @@ void Solver::Conjugate()
 
 	for (int i = 0; i < max_iter; ++i)
 	{
-		// ��(k) = r(k)Tr(k) / p(k)TAp(k)
+		// α(k) = r(k)Tr(k) / p(k)TAp(k)
 		ComputeAp << <dim3(ny, nz), nx >> > (Ap, p, max_pos);
 		Mul << <dim3(ny, nz), nx >> > (p, Ap, temp);
 		Reduce();
 		checkCudaErrors(cudaMemcpy(&pAp, &temp[0], sizeof(float), cudaMemcpyDeviceToHost));
 		float alpha = old_zTr / pAp;
 
-		// x(k+1) = x(k) + ��(k)p(k), r(k+1) = r(k) - ��(k)Ap(k)
+		// x(k+1) = x(k) + α(k)p(k), r(k+1) = r(k) - α(k)Ap(k)
 		UpdateResidual << <dim3(ny, nz), nx >> > (r, p, Ap, x, alpha);
 
 		// if ||r(k+1)|| is sufficient enough small, break
@@ -1021,12 +1065,12 @@ void Solver::Conjugate()
 		CopyFrom << <dim3(ny, nz), nx >> > (z, r);
 #endif
 
-		// ��(k) = r(k+1)Tr(k+1)/r(k)Tr(k)
+		// β(k) = r(k+1)Tr(k+1)/r(k)Tr(k)
 		Mul << <dim3(ny, nz), nx >> > (z, r, temp);
 		Reduce();
 		checkCudaErrors(cudaMemcpy(&new_zTr, &temp[0], sizeof(float), cudaMemcpyDeviceToHost));
 		float beta = new_zTr / old_zTr;
-		// p(k+1) = r(k+1) + ��(k)p(k)
+		// p(k+1) = r(k+1) + β(k)p(k)
 		UpdateP << <dim3(ny, nz), nx >> > (p, z, beta);
 
 		old_zTr = new_zTr;

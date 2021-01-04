@@ -24,6 +24,8 @@ public:
 	
 	void Scatter();
 
+	void ResetGridValue();
+
 	// accelerate aTb operation
 	void Reduce();
 
