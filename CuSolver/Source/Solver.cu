@@ -843,7 +843,7 @@ void Solver::UpdateCuda()
 	max_pos.z = nz;
 
 	// add force
-	// ForceKernelUy << <dim3(ny + 1, nz), nx >> > (f_ux, f_uy, f_uz, f_temperature, dt, temperature_env, gravity, u, max_pos);
+	ForceKernelUy << <dim3(ny + 1, nz), nx >> > (f_ux, f_uy, f_uz, f_temperature, dt, temperature_env, gravity, u, max_pos);
 	
 	Advect();
 	Project();
