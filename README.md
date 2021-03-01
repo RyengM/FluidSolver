@@ -19,3 +19,7 @@
 - open FluidSolver.sln
 - build solution
 - set Renderer as startup project
+
+## Python
+- pip install taichi
+- run
