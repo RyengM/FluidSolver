@@ -2,8 +2,9 @@
 import taichi as ti
 import numpy as np
 import random
+import os
 # from my_mgpcg_3 import MGPCG
-from my_mgpcg_4 import MultigridPCGPoissonSolver
+from my_mgpcg import MultigridPCGPoissonSolver
 ti.init(arch=ti.gpu)
 
 res, dt = 512, 5e-3
@@ -551,6 +552,11 @@ def fill_vorticity():
         # if heat_type[i, j] == 1:
         #     show_vorticity[i, j] = ti.Vector([0.0, 0.8, 0.0])
 
+path = "results"
+folder = os.path.exists(path)
+if not folder:
+    os.mkdir(path)
+
 gui = ti.GUI('euler', (res, res))
 while gui.running:
     if gui.get_event(ti.GUI.PRESS):
@@ -567,7 +573,7 @@ while gui.running:
         # gui.circles(tracers.to_numpy(), radius=1.5, color=0x068587)
         fill_vorticity()
         gui.set_image(show_vorticity)
-        filename = "results/output1/euler_lag_" + str(count / 100) + ".png"
+        filename = "results/euler_lag_" + str(count / 100) + ".png"
         gui.show(filename)
         print("output: " + str(count))
     count += 1
