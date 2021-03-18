@@ -2,20 +2,22 @@
 import taichi as ti
 import numpy as np
 import random
+# from my_mgpcg_3 import MGPCG
+from my_mgpcg_4 import MultigridPCGPoissonSolver
 ti.init(arch=ti.gpu)
 
-res, dt = 512, 4e-3
-# t_decay = 0.95
-t_decay = 0.98
-nx = 256
+res, dt = 512, 5e-3
+# grid resolution
+nx = 512
 dx = 1.0 / nx
+# num of particles in one cell
 block_capacity = 6
 # temperature coefficient
-alpha = 0.5
+alpha = 0.1
 # gravity coefficient
 # beta = 0.35
 beta = 0.0
-# vorticity confinment coefficient
+# vort confinement coefficient
 epsilon = 0.1
 
 # euler
@@ -33,10 +35,13 @@ vorticity_enhance_force = ti.Vector.field(2, float, shape=(nx, nx))
 delta_vorticity = ti.field(float, shape=(nx, nx))
 psi = ti.field(float, shape=(nx, nx))
 new_psi = ti.field(float, shape=(nx, nx))
+show_vorticity = ti.Vector.field(3, float, shape=(nx, nx))
+temp_vector2 = ti.Vector.field(2, float, shape=(nx, nx))
+temp_scalar = ti.field(float, shape=(nx, nx))
 
 threshold = ti.field(float, shape=())
 
-temperature_decay = 0.95
+temperature_decay = dt
 source_temperature = 500
 source_density = 0.5
 
@@ -81,11 +86,29 @@ class TexPair:
 pressure_pair = TexPair(pressure, new_pressure)
 psi_pair = TexPair(psi, new_psi)
 
+# mgpcg
+mgpcg_proj = MultigridPCGPoissonSolver(grid_type, nx, nx, n_mg_levels=6)
+mgpcg_psi = MultigridPCGPoissonSolver(grid_type, nx, nx, n_mg_levels=6)
+# mgpcg_proj = MGPCG(nx, n_mg_levels=4)
+# mgpcg_psi = MGPCG(nx, n_mg_levels=2)
+
 @ti.func
 def sample(qf, u, v):
     I = ti.Vector([int(u), int(v)])
     I = max(0, min(nx - 1, I))
     return qf[I]
+
+@ti.func
+def sample_minmax(vf, p):
+    u, v = p
+    s, t = u - 0.5, v - 0.5
+    # floor
+    iu, iv = ti.floor(s), ti.floor(t)
+    a = sample(vf, iu, iv)
+    b = sample(vf, iu + 1, iv)
+    c = sample(vf, iu, iv + 1)
+    d = sample(vf, iu + 1, iv + 1)
+    return min(a, b, c, d), max(a, b, c, d)
 
 @ti.func
 def lerp(vl, vr, frac):
@@ -129,6 +152,20 @@ def backtrace_rk3(vf: ti.template(), p, dt: ti.template()):
     p -= dt * ((2 / 9) * v1 + (1 / 3) * v2 + (4 / 9) * v3)
     return p
 
+@ti.func
+def backtrace_rk4(vf: ti.template(), p, dt: ti.template()):
+    v1 = bilerp(vf, p)
+    p1 = p - 0.5 * dt * v1
+    v2 = bilerp(vf, p1)
+    p2 = p - 0.5 * dt * v2
+    v3 = bilerp(vf, p2)
+    p3 = p - dt * v3
+    v4 = bilerp(vf, p3)
+    p -= dt * (v1 + 2.0 * v2 + 2.0 * v3 + v4) / 6.0
+    return p
+
+backtrace = backtrace_rk4
+
 @ti.kernel
 def copy(source: ti.template(), dest: ti.template()):
     for i, j in source:
@@ -138,10 +175,52 @@ def copy(source: ti.template(), dest: ti.template()):
 @ti.kernel
 def advect_semilag(vf: ti.template(), qf: ti.template(), new_qf: ti.template()):
     for i, j in vf:
-        if grid_type[i, j] == 1:
+        if grid_type[i, j] != 2:
             p = ti.Vector([i, j]) + 0.5
-            p = backtrace_rk3(vf, p, dt)
+            p = backtrace(vf, p, dt)
             new_qf[i, j] = bilerp(qf, p)
+
+@ti.kernel
+def advect_bfecc(vf: ti.template(), qf: ti.template(), new_qf: ti.template(),
+                 intermedia_qf: ti.template()):
+    for i, j in vf:
+        p = ti.Vector([i, j]) + 0.5
+        p_star = backtrace(vf, p, dt)
+        intermedia_qf[i, j] = bilerp(qf, p_star)
+
+    for i, j in vf:
+        p = ti.Vector([i, j]) + 0.5
+        p_two_star = backtrace(vf, p, -dt)
+        new_qf[i, j] = bilerp(intermedia_qf, p_two_star)
+        
+    for i, j in vf:
+        intermedia_qf[i, j] = qf[i, j] + 0.5 * (qf[i, j] - new_qf[i, j])
+
+    for i, j in vf:
+        p = ti.Vector([i, j]) + 0.5
+        p_star = backtrace(vf, p, dt)
+        new_qf[i, j] = bilerp(intermedia_qf, p_star)
+
+@ti.kernel
+def clamp_extrema_vec(vf: ti.template(), qf: ti.template(), new_qf: ti.template()):
+    for i, j in vf:
+        p = ti.Vector([i, j]) + 0.5
+        p_star = backtrace(vf, p, dt)
+        min_val, max_val = sample_minmax(qf, p_star)
+        cond = min_val < new_qf[i, j] < max_val
+        for k in ti.static(range(cond.n)):
+            if not cond[k]:
+                new_qf[i, j][k] = sample(qf, p_star.x, p_star.y)[k]
+
+@ti.kernel
+def clamp_extrema_scalar(vf: ti.template(), qf: ti.template(), new_qf: ti.template()):
+    for i, j in vf:
+        p = ti.Vector([i, j]) + 0.5
+        p_star = backtrace(vf, p, dt)
+        min_val, max_val = sample_minmax(qf, p_star)
+        cond = min_val < new_qf[i, j] < max_val
+        if not cond:
+            new_qf[i, j] = sample(qf, p_star.x, p_star.y)
 
 @ti.kernel
 def find_curl():
@@ -164,13 +243,15 @@ def find_curl_force():
 @ti.kernel
 def find_delta_vorticity():
     for i, j in vorticity:
-        if (grid_type[i, j] == 1):
+        if grid_type[i, j] == 1:
             delta_vorticity[i, j] = advected_vorticity[i, j] - vorticity[i, j]
 
 def find_psi():
-    for _ in range(30):
-        jacobi(psi_pair.cur, psi_pair.nxt, delta_vorticity)
-        psi_pair.swap()
+    # for _ in range(30):
+    #     jacobi(psi_pair.cur, psi_pair.nxt, delta_vorticity)
+    #     psi_pair.swap()
+    # mgpcg_psi.set_grid_type(grid_type)
+    mgpcg_psi.solve(psi_pair.cur, delta_vorticity)
 
 @ti.kernel
 def add_curl_psi():
@@ -185,9 +266,10 @@ def advect_tracer():
     for i in tracers:
         if tracer_age[i] > 0:
             p = tracers[i] * nx + 0.5
-            p = backtrace_rk3(velocity, p, dt)
+            p = backtrace(velocity, p, dt)
             tracers[i] += bilerp(velocity, p) * dt * dx
 
+# get -▽·u
 @ti.kernel
 def divergence(vf: ti.template()):
     for i, j in vf:
@@ -196,34 +278,28 @@ def divergence(vf: ti.template()):
             vr = sample(vf, i + 1, j).x
             vb = sample(vf, i, j - 1).y
             vt = sample(vf, i, j + 1).y
-            # if i == 0:
-            #     vl = 0
-            # if i == nx - 1:
-            #     vr = 0
-            # if j == 0:
-            #     vb = 0
-            # if j == nx - 1:
-            #     vt = 0
-            velocity_div[i, j] = (vr - vl + vt - vb) * 0.5
+            velocity_div[i, j] = -(vr - vl + vt - vb) * 0.5
 
 @ti.kernel
 def jacobi(pf: ti.template(), new_pf: ti.template(), rhsf: ti.template()):
     for i, j in pf:
-        pl = sample(pf, i - 1, j)
-        pr = sample(pf, i + 1, j)
-        pb = sample(pf, i, j - 1)
-        pt = sample(pf, i, j + 1)
-        rhs = rhsf[i, j]
-        new_pf[i, j] = (pl + pr + pb + pt - rhs) * 0.25
+        if grid_type[i, j] == 1:
+            pl = sample(pf, i - 1, j)
+            pr = sample(pf, i + 1, j)
+            pb = sample(pf, i, j - 1)
+            pt = sample(pf, i, j + 1)
+            rhs = rhsf[i, j]
+            new_pf[i, j] = (pl + pr + pb + pt - rhs) * 0.25
 
 @ti.kernel
 def subtract_gradient(vf: ti.template(), pf: ti.template()):
     for i, j in vf:
-        pl = sample(pf, i - 1, j)
-        pr = sample(pf, i + 1, j)
-        pb = sample(pf, i, j - 1)
-        pt = sample(pf, i, j + 1)
-        vf[i, j] -= 0.5 * ti.Vector([pr - pl, pt - pb])
+        if grid_type[i, j] == 1:
+            pl = sample(pf, i - 1, j)
+            pr = sample(pf, i + 1, j)
+            pb = sample(pf, i, j - 1)
+            pt = sample(pf, i, j + 1)
+            vf[i, j] -= 0.5 * ti.Vector([pr - pl, pt - pb])
 
 @ti.kernel
 def p2g():
@@ -280,7 +356,7 @@ def g2p():
 def add_heat():
     for i, j in velocity:
         # heat decay
-        temperature[i, j] *= temperature_decay
+        temperature[i, j] *= ti.exp(-temperature_decay)
         # add heat
         if heat_type[i, j] == 1:
             temperature[i, j] = source_temperature
@@ -291,12 +367,16 @@ def add_force():
     for i, j in velocity:
         # buoyancy and gravity
         velocity[i, j].y += alpha * temperature[i, j] * dt - beta * mass[i, j] * dt
-        # vorticity confinement
-        # velocity[i, j] += dx * vorticity_enhance_force[i, j] * dt
     # boundary
     for i, j in velocity:
         if grid_type[i, j] != 1:
             velocity[i, j] = [0, 0]
+
+@ti.kernel
+def add_vort_force():
+    for i, j in velocity:
+        # vorticity confinement
+        velocity[i, j] += epsilon * vorticity_enhance_force[i, j] * dt
 
 @ti.kernel
 def set_grid_type():
@@ -307,10 +387,10 @@ def set_grid_type():
         grid_type[nx - 1, i] = 0
         grid_type[i, 0] = 0
         grid_type[i, nx - 1] = 0
-        grid_type[0, i] = 2
+        grid_type[0, i] = 0
     # set heat
     for i, j in velocity:
-        if i >= nx // 2 - 2 and i <= nx // 2 + 2 and j >= 4 and j <= 6:
+        if (i - nx // 2) * (i - nx // 2) + (j - nx // 20) * (j - nx // 20) < nx // 5:
             heat_type[i, j] = 1
 
 def init_particles():
@@ -383,7 +463,7 @@ def awake_tracer():
         if tracer_age[i] == 0:
             if ti.random() < threshold[None]:
                 tracer_age[i] += 0.001
-                tracers[i] = [(nx // 2 - 2 + 4 * ti.random()) * dx, (4 + 2 * ti.random()) * dx]
+                tracers[i] = [(nx // 2 - nx // 40 + nx // 20 * ti.random()) * dx, (nx // 20 - 1 + 2 * ti.random()) * dx]
 
 def copy2GPU():
     temp = np.array(particles)
@@ -397,16 +477,19 @@ def copy2CPU():
 
 def project():
     divergence(velocity)
-    for _ in range(30):
-        jacobi(pressure_pair.cur, pressure_pair.nxt, velocity_div)
-        pressure_pair.swap()
+    # pressure_pair.cur.fill(0)
+    # for _ in range(30):
+    #     jacobi(pressure_pair.cur, pressure_pair.nxt, velocity_div)
+    #     pressure_pair.swap()
+    # mgpcg_proj.set_grid_type(grid_type)
+    mgpcg_proj.solve(pressure_pair.cur, velocity_div)
     subtract_gradient(velocity, pressure_pair.cur)
 
 def init():
     set_grid_type()
-    init_particles()
+    # init_particles()
     init_tracers()
-    sort_particles()
+    # sort_particles()
 
 def apic():
     resample_particles()
@@ -423,20 +506,26 @@ def euler():
     # ω -> f_vort
     find_curl_force()
     # u -> u*
-    advect_semilag(velocity, velocity, new_velocity)
-    advect_semilag(velocity, temperature, new_temperature)
+    advect_bfecc(velocity, velocity, new_velocity, temp_vector2)
+    clamp_extrema_vec(velocity, velocity, new_velocity)
+    # advect_semilag(velocity, velocity, new_velocity)
     copy(new_velocity, velocity)
+    # T -> T*
+    advect_bfecc(velocity, temperature, new_temperature, temp_scalar)
+    clamp_extrema_scalar(velocity, temperature, new_temperature)
+    # advect_semilag(velocity, temperature, new_temperature)
     copy(new_temperature, temperature)
-    # ω -> ω~
-    advect_semilag(velocity, vorticity, advected_vorticity)
-    # u* -> ω*
-    find_curl()
-    # δω = ω~ - ω*
-    find_delta_vorticity()
-    # δω -> ψ
-    find_psi()
-    # ψ -> δu
-    add_curl_psi()
+    # # ω -> ω~
+    # advect_bfecc(velocity, vorticity, advected_vorticity, temp_scalar)
+    # clamp_extrema_scalar(velocity, vorticity, advected_vorticity)
+    # # u* -> ω*
+    # find_curl()
+    # # δω = ω~ - ω*
+    # find_delta_vorticity()
+    # # δω -> ψ
+    # find_psi()
+    # # ψ -> δu
+    # add_curl_psi()
 
 def step():
     awake_tracer()
@@ -444,12 +533,23 @@ def step():
     euler()
     # apic()
     add_force()
+    # add_vort_force()
     add_heat()
     project()
 
 init()
 paused = False
 count = 0
+
+@ti.kernel
+def fill_vorticity():
+    for i, j in vorticity:
+        if vorticity[i, j] > 0:
+            show_vorticity[i, j] = ti.Vector([0.8, 0.5, 0.4]) * vorticity[i, j] / 10.0
+        elif vorticity[i, j] < 0:
+            show_vorticity[i, j] = ti.Vector([0.2, 0.5, 0.7]) * -vorticity[i, j] / 10.0
+        # if heat_type[i, j] == 1:
+        #     show_vorticity[i, j] = ti.Vector([0.0, 0.8, 0.0])
 
 gui = ti.GUI('euler', (res, res))
 while gui.running:
@@ -463,10 +563,11 @@ while gui.running:
     if not paused:
         step()
         
-    if count % 20 == 0:
-        gui.circles(tracers.to_numpy(), radius=1.5, color=0x068587)
-        # filename = "results/output1/euler_lag_" + str(count) + ".png"
-        # gui.show(filename)
-        gui.show()
+    if count % 100 == 0:
+        # gui.circles(tracers.to_numpy(), radius=1.5, color=0x068587)
+        fill_vorticity()
+        gui.set_image(show_vorticity)
+        filename = "results/output1/euler_lag_" + str(count / 100) + ".png"
+        gui.show(filename)
         print("output: " + str(count))
     count += 1
