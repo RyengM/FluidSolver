@@ -35,6 +35,6 @@ public:
 private:
 	GLFWwindow* window = nullptr;
 
-	const unsigned int screenWidth = 1200;
-	const unsigned int screenHeight = 1200;
+	const unsigned int screenWidth = 1920;
+	const unsigned int screenHeight = 1080;
 };
