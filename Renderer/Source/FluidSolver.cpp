@@ -63,27 +63,27 @@ void FluidSolver::Render()
 	static const float bbVerts[] =
 	{
 		-0.5, -0.5, -0.5,
-		0.5,  -0.5, -0.5,
-		0.5,  0.5,  -0.5,
-		-0.5, 0.5,  -0.5,
-		-0.5, 0.5,  0.5,
-		-0.5, -0.5, 0.5,
-		0.5,  -0.5, 0.5,
-		0.5,  0.5,  0.5,
-		-0.5, 0.5,  0.5,
-		-0.5, -0.5, 0.5,
+		 0.5, -0.5, -0.5,
+		 0.5,  0.5, -0.5,
+		-0.5,  0.5, -0.5,
+		-0.5,  0.5,  0.5,
+		-0.5, -0.5,  0.5,
+		 0.5, -0.5,  0.5,
+		 0.5,  0.5,  0.5,
+		-0.5,  0.5,  0.5,
+		-0.5, -0.5,  0.5,
 
 		-0.5, -0.5, -0.5,
-		-0.5, 0.5,  -0.5,
+		-0.5,  0.5, -0.5,
 
-		-0.5, 0.5,  0.5,
-		0.5,  0.5,  0.5,
+		-0.5,  0.5,  0.5,
+		 0.5,  0.5,  0.5,
 
-		0.5,  0.5,  -0.5,
-		0.5,  0.5,  0.5,
+		 0.5,  0.5, -0.5,
+		 0.5,  0.5,  0.5,
 
-		0.5,  -0.5, -0.5,
-		0.5,  -0.5, 0.5
+		 0.5, -0.5, -0.5,
+		 0.5, -0.5,  0.5
 	};
 	glBufferData(GL_ARRAY_BUFFER, sizeof(bbVerts), bbVerts, GL_STATIC_DRAW);
 	glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, NULL);
@@ -98,7 +98,7 @@ void FluidSolver::Render()
 
 	// build box
 	const float boxVertices[] = {
-		 -0.5f, -0.5f, -0.5f,
+		-0.5f, -0.5f, -0.5f,
 		 0.5f, -0.5f, -0.5f,
 		 0.5f,  0.5f, -0.5f,
 		 0.5f,  0.5f, -0.5f,
@@ -150,7 +150,7 @@ void FluidSolver::Render()
 	glEnableVertexAttribArray(0);
 
 	// fetch data from cu solver
-	Solver solver = Solver(Nx, Ny, Nz, 0.15f, 20.f, 20.f, 30, 0.04f, 0.f, 0.f, 40.f, 0.f);
+	Solver solver = Solver(Nx, Ny, Nz, 0.35f, 25.f, 20.f, 30, 0.1f, 0.2f, 0.f, 0.f, 0.f);
 	solver.Initialize();
 	solver.Update();
 	// result to stack corruption, but data is right, ignore it now

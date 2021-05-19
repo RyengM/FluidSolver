@@ -13,11 +13,14 @@
 
 /////////////////////////////
 //                         //
-//       y|  x             //
-//        | /              //
-//        |/ __ __ __ z    //
-//                         //
+//    y(j)|                //
+//        |                //
+//        | __ __ __ x(i)  //
+//       /                 //
+//      / z(k)             //
 /////////////////////////////
+
+// u: velocity, v: vorticity, l: left, r: right, bo: bottom, t: top, bh: behind, f: front
 
 // voxels out of bound will be assigned as border value
 static __device__ float sample(float* field, int3 pos, int3 max_pos)
@@ -37,7 +40,6 @@ static __device__ float cg_sample(float* field, int3 pos, int3 max_pos)
 // sum of six neighbor sample
 static __device__ float neibor_sum(float* field, size_t i, size_t j, size_t k, int3 max_pos)
 {
-	size_t pos = i + j * max_pos.x + k * max_pos.x * max_pos.y;
 	return cg_sample(field, combine_int3(i - 1, j, k), max_pos) + cg_sample(field, combine_int3(i + 1, j, k), max_pos)
 		+ cg_sample(field, combine_int3(i, j - 1, k), max_pos) + cg_sample(field, combine_int3(i, j + 1, k), max_pos)
 		+ cg_sample(field, combine_int3(i, j, k - 1), max_pos) + cg_sample(field, combine_int3(i, j, k + 1), max_pos);
@@ -221,25 +223,36 @@ static __device__ float3 RK2(float* ux, float* uy, float* uz, float3 pos, float 
 	return pos - dt * u;
 }
 
-// reflect RK
-static __device__ float3 RRK2(float* ux, float* uy, float* uz, float3 pos, float dt, int max_pos_x, int max_pos_y, int max_pos_z)
+static __device__ float3 RK4(float* ux, float* uy, float* uz, float3 pos, float dt, int max_pos_x, int max_pos_y, int max_pos_z)
 {
-	float3 u;
-	u.x = trilerp(ux, pos, 0.f, 0.5f, 0.5f, combine_int3(max_pos_x + 1, max_pos_y, max_pos_z), 0);
-	u.y = trilerp(uy, pos, 0.5f, 0.f, 0.5f, combine_int3(max_pos_x, max_pos_y + 1, max_pos_z), 0);
-	u.z = trilerp(uz, pos, 0.5f, 0.5f, 0.f, combine_int3(max_pos_x, max_pos_y, max_pos_z + 1), 0);
-	float3 mid = pos + 0.5f * dt * u;
-	u.x = trilerp(ux, mid, 0.f, 0.5f, 0.5f, combine_int3(max_pos_x + 1, max_pos_y, max_pos_z), 0);
-	u.y = trilerp(uy, mid, 0.5f, 0.f, 0.5f, combine_int3(max_pos_x, max_pos_y + 1, max_pos_z), 0);
-	u.z = trilerp(uz, mid, 0.5f, 0.5f, 0.f, combine_int3(max_pos_x, max_pos_y, max_pos_z + 1), 0);
+	float3 u1;
+	u1.x = trilerp(ux, pos, 0.f, 0.5f, 0.5f, combine_int3(max_pos_x + 1, max_pos_y, max_pos_z), 0);
+	u1.y = trilerp(uy, pos, 0.5f, 0.f, 0.5f, combine_int3(max_pos_x, max_pos_y + 1, max_pos_z), 0);
+	u1.z = trilerp(uz, pos, 0.5f, 0.5f, 0.f, combine_int3(max_pos_x, max_pos_y, max_pos_z + 1), 0);
+	float3 p1 = pos - 0.5f * dt * u1;
+	float3 u2;
+	u2.x = trilerp(ux, p1, 0.f, 0.5f, 0.5f, combine_int3(max_pos_x + 1, max_pos_y, max_pos_z), 0);
+	u2.y = trilerp(uy, p1, 0.5f, 0.f, 0.5f, combine_int3(max_pos_x, max_pos_y + 1, max_pos_z), 0);
+	u2.z = trilerp(uz, p1, 0.5f, 0.5f, 0.f, combine_int3(max_pos_x, max_pos_y, max_pos_z + 1), 0);
+	float3 p2 = pos - 0.5f * dt * u2;
+	float3 u3;
+	u3.x = trilerp(ux, p2, 0.f, 0.5f, 0.5f, combine_int3(max_pos_x + 1, max_pos_y, max_pos_z), 0);
+	u3.y = trilerp(uy, p2, 0.5f, 0.f, 0.5f, combine_int3(max_pos_x, max_pos_y + 1, max_pos_z), 0);
+	u3.z = trilerp(uz, p2, 0.5f, 0.5f, 0.f, combine_int3(max_pos_x, max_pos_y, max_pos_z + 1), 0);
+	float3 p3 = pos - dt * u3;
+	float3 u4;
+	u4.x = trilerp(ux, p3, 0.f, 0.5f, 0.5f, combine_int3(max_pos_x + 1, max_pos_y, max_pos_z), 0);
+	u4.y = trilerp(uy, p3, 0.5f, 0.f, 0.5f, combine_int3(max_pos_x, max_pos_y + 1, max_pos_z), 0);
+	u4.z = trilerp(uz, p3, 0.5f, 0.5f, 0.f, combine_int3(max_pos_x, max_pos_y, max_pos_z + 1), 0);
+	pos = pos - dt * (u1 + 2.0 * u2 + 2.0 * u3 + u4) / 6.0;
 
-	return pos + dt * u;
+	return pos;
 }
 
 static __device__ float3 MacCormack(float* ux, float* uy, float* uz, float3 pos, float dt, int max_pos_x, int max_pos_y, int max_pos_z)
 {
-	float3 coord_predict = RK2(ux, uy, uz, pos, dt, max_pos_x, max_pos_y, max_pos_z);
-	float3 coord_reflect = RRK2(ux, uy, uz, pos, dt, max_pos_x, max_pos_y, max_pos_z);
+	float3 coord_predict = RK4(ux, uy, uz, pos, dt, max_pos_x, max_pos_y, max_pos_z);
+	float3 coord_reflect = RK4(ux, uy, uz, pos, -dt, max_pos_x, max_pos_y, max_pos_z);
 
 	return coord_predict + (pos - coord_reflect) / 2.f;
 }
@@ -365,10 +378,10 @@ static __global__ void SourceKernel(float* rho, float* temperature, float rho0, 
 	size_t k = blockIdx.y;
 	size_t ind = i + j * blockDim.x + k * blockDim.x * gridDim.x;
 
-	if (pow((float(i) - float(blockDim.x / 2)), 2) + pow((float(k) - float(gridDim.y / 2)), 2) <= 80 && j > 1 && j < 6)
+	if (pow((float(i) - float(blockDim.x / 2)), 2) + pow(float(j) - 25.0, 2) + pow((float(k) - float(gridDim.y / 2)), 2) <= 80)
 	{
 		rho[ind] = rho0;
-		//temperature[ind] = temperature0;
+		temperature[ind] = temperature0;
 	}
 }
 
@@ -382,17 +395,14 @@ static __global__ void ForceKernelUy(float* ux, float* uy, float* uz, float* f_t
 	float3 pos;
 	// absolute position  center: 0, ux: 1, uy: 2, uz: 3
 	pos.x = float(i) + 0.5f;
-	pos.y = float(j) + 0.f;
+	pos.y = float(j);
 	pos.z = float(k) + 0.5f;
 
-	//float temperature = trilerp(f_temperature, pos, 0.5f, 0.5f, 0.5f, max_pos, 1);
+	float temperature = trilerp(f_temperature, pos, 0.5f, 0.5f, 0.5f, max_pos, 1);
 
-	//float buoyancy = (temperature - temperature_env) * 5.f;
+	float buoyancy = (temperature - temperature_env) * dt;
 
-	if (pow((float(i) - float(blockDim.x / 2)), 2) + pow((float(k) - float(gridDim.y / 2)), 2) <= 80 && j > 1 && j < 6)
-	{
-		uy[ind] = u0.y;
-	}
+	uy[ind] += buoyancy;
 }
 
 static __global__ void SemiLagKernel(float* field, float* new_field, float* ux, float* uy, float* uz, float dt, int max_pos_x, int max_pos_y, int max_pos_z, int dir)
@@ -412,7 +422,7 @@ static __global__ void SemiLagKernel(float* field, float* new_field, float* ux, 
 #if MACCORMACK
 	float3 coord = MacCormack(ux, uy, uz, pos, dt, max_pos_x, max_pos_y, max_pos_z);
 #else
-	float3 coord = RK2(ux, uy, uz, pos, dt, max_pos_x, max_pos_y, max_pos_z);
+	float3 coord = RK4(ux, uy, uz, pos, dt, max_pos_x, max_pos_y, max_pos_z);
 #endif
 	new_field[ind] = trilerp(field, coord, dir == 1 ? 0.f : 0.5f, dir == 2 ? 0.f : 0.5f, dir == 3 ? 0.f : 0.5f,
 		combine_int3(dir == 1 ? (max_pos_x + 1) : max_pos_x, dir == 2 ? (max_pos_y + 1) : max_pos_y, dir == 3 ? (max_pos_z + 1) : max_pos_z), dir == 0 ? 1 : 0);
@@ -466,8 +476,8 @@ static __global__ void ApplyGradientUx(float* ux, float* pressure_field, int3 ma
 	size_t k = blockIdx.y;
 	size_t ind = i + j * blockDim.x + k * blockDim.x * gridDim.x;
 
-	float pl = sample(pressure_field, combine_int3(i - 1, j, k), combine_int3(max_pos.x, max_pos.y, max_pos.z));
-	float pr = sample(pressure_field, combine_int3(i, j, k), combine_int3(max_pos.x, max_pos.y, max_pos.z));
+	float pl = sample(pressure_field, combine_int3(i - 1, j, k), max_pos);
+	float pr = sample(pressure_field, combine_int3(i, j, k), max_pos);
 
 	ux[ind] -= pr - pl;
 }
@@ -479,8 +489,8 @@ static __global__ void ApplyGradientUy(float* uy, float* pressure_field, int3 ma
 	size_t k = blockIdx.y;
 	size_t ind = i + j * blockDim.x + k * blockDim.x * gridDim.x;
 
-	float pbo = sample(pressure_field, combine_int3(i, j - 1, k), combine_int3(max_pos.x, max_pos.y, max_pos.z));
-	float pt = sample(pressure_field, combine_int3(i, j, k), combine_int3(max_pos.x, max_pos.y, max_pos.z));
+	float pbo = sample(pressure_field, combine_int3(i, j - 1, k), max_pos);
+	float pt = sample(pressure_field, combine_int3(i, j, k), max_pos);
 
 	uy[ind] -= pt - pbo;
 }
@@ -492,10 +502,133 @@ static __global__ void ApplyGradientUz(float* uz, float* pressure_field, int3 ma
 	size_t k = blockIdx.y;
 	size_t ind = i + j * blockDim.x + k * blockDim.x * gridDim.x;
 
-	float pbh = sample(pressure_field, combine_int3(i, j, k - 1), combine_int3(max_pos.x, max_pos.y, max_pos.z));
-	float pf = sample(pressure_field, combine_int3(i, j, k), combine_int3(max_pos.x, max_pos.y, max_pos.z));
+	float pbh = sample(pressure_field, combine_int3(i, j, k - 1), max_pos);
+	float pf = sample(pressure_field, combine_int3(i, j, k), max_pos);
 
 	uz[ind] -= pf - pbh;
+}
+
+static __global__ void FindVortx(float* vortx, float* uy, float* uz, int3 max_pos_uy, int3 max_pos_uz)
+{
+	size_t i = threadIdx.x;
+	size_t j = blockIdx.x;
+	size_t k = blockIdx.y;
+	size_t ind = i + j * blockDim.x + k * blockDim.x * gridDim.x;
+
+	float3 pos;
+	pos.x = float(i) + 0.5f;
+	pos.y = float(j);
+	pos.z = float(k);
+
+	float ubh = trilerp(uy, combine_float3(pos.x, pos.y, pos.z - 0.5f), 0.5f, 0.f, 0.5f, max_pos_uy, true);
+	float uf = trilerp(uy, combine_float3(pos.x, pos.y, pos.z + 0.5f), 0.5f, 0.f, 0.5f, max_pos_uy, true);
+	float ubo = trilerp(uz, combine_float3(pos.x, pos.y - 0.5f, pos.z), 0.5f, 0.5f, 0.f, max_pos_uz, true);
+	float ut = trilerp(uz, combine_float3(pos.x, pos.y + 0.5f, pos.z), 0.5f, 0.5f, 0.f, max_pos_uz, true);
+	vortx[ind] = uf - ubh - ut + ubo;
+}
+
+static __global__ void FindVorty(float* vorty, float* ux, float* uz, int3 max_pos_ux, int3 max_pos_uz)
+{
+	size_t i = threadIdx.x;
+	size_t j = blockIdx.x;
+	size_t k = blockIdx.y;
+	size_t ind = i + j * blockDim.x + k * blockDim.x * gridDim.x;
+
+	float3 pos;
+	pos.x = float(i);
+	pos.y = float(j) + 0.5f;
+	pos.z = float(k);
+
+	float ul = trilerp(uz, combine_float3(pos.x - 0.5f, pos.y, pos.z), 0.5f, 0.5f, 0.f, max_pos_uz, true);
+	float ur = trilerp(uz, combine_float3(pos.x + 0.5f, pos.y, pos.z), 0.5f, 0.5f, 0.f, max_pos_uz, true);
+	float ubh = trilerp(ux, combine_float3(pos.x, pos.y, pos.z - 0.5f), 0.f, 0.5f, 0.5f, max_pos_uz, true);
+	float uf = trilerp(ux, combine_float3(pos.x, pos.y, pos.z + 0.5f), 0.f, 0.5f, 0.5f, max_pos_uz, true);
+	vorty[ind] = ur - ul - uf + ubh;
+}
+
+static __global__ void FindVortz(float* vortz, float* ux, float* uy, int3 max_pos_ux, int3 max_pos_uy)
+{
+	size_t i = threadIdx.x;
+	size_t j = blockIdx.x;
+	size_t k = blockIdx.y;
+	size_t ind = i + j * blockDim.x + k * blockDim.x * gridDim.x;
+
+	float3 pos;
+	pos.x = float(i);
+	pos.y = float(j);
+	pos.z = float(k) + 0.5f;
+
+	float ul = trilerp(uy, combine_float3(pos.x - 0.5f, pos.y, pos.z), 0.5f, 0.f, 0.5f, max_pos_uy, true);
+	float ur = trilerp(uy, combine_float3(pos.x + 0.5f, pos.y, pos.z), 0.5f, 0.f, 0.5f, max_pos_uy, true);
+	float ubo = trilerp(ux, combine_float3(pos.x - 0.5f, pos.y, pos.z), 0.f, 0.5f, 0.5f, max_pos_ux, true);
+	float ut = trilerp(ux, combine_float3(pos.x + 0.5f, pos.y, pos.z), 0.f, 0.5f, 0.5f, max_pos_ux, true);
+	vortz[ind] = ut - ubo - ur + ul;
+}
+
+static __global__ void ApplyVortConfiment(float* u, float* vortx, float* vorty, float* vortz, int3 max_pos, int dir, float coeff)
+{
+	size_t i = threadIdx.x;
+	size_t j = blockIdx.x;
+	size_t k = blockIdx.y;
+	size_t ind = i + j * blockDim.x + k * blockDim.x * gridDim.x;
+
+	if (i > 2 && i < blockDim.x - 2 && j > 2 && j < gridDim.x - 2 && k > 2 && k < gridDim.y - 2)
+	{
+		float3 pos;
+		// absolute position ux: 1, uy: 2, uz: 3
+		pos.x = float(i) + (dir == 1 ? 0.f : 0.5f);
+		pos.y = float(j) + (dir == 2 ? 0.f : 0.5f);
+		pos.z = float(k) + (dir == 3 ? 0.f : 0.5f);
+
+		float vxt = trilerp(vortx, combine_float3(pos.x, pos.y + 0.5, pos.z), 0.5f, 0.f, 0.f, combine_int3(max_pos.x, max_pos.y + 1, max_pos.z + 1), true);
+		float vyt = trilerp(vorty, combine_float3(pos.x, pos.y + 0.5, pos.z), 0.f, 0.5f, 0.f, combine_int3(max_pos.x + 1, max_pos.y, max_pos.z + 1), true);
+		float vzt = trilerp(vortz, combine_float3(pos.x, pos.y + 0.5, pos.z), 0.f, 0.f, 0.5f, combine_int3(max_pos.x + 1, max_pos.y + 1, max_pos.z), true);
+		float vt = sqrt(vxt * vxt + vyt * vyt + vzt * vzt);
+
+		float vxbo = trilerp(vortx, combine_float3(pos.x, pos.y - 0.5, pos.z), 0.5f, 0.f, 0.f, combine_int3(max_pos.x, max_pos.y + 1, max_pos.z + 1), true);
+		float vybo = trilerp(vorty, combine_float3(pos.x, pos.y - 0.5, pos.z), 0.f, 0.5f, 0.f, combine_int3(max_pos.x + 1, max_pos.y, max_pos.z + 1), true);
+		float vzbo = trilerp(vortz, combine_float3(pos.x, pos.y - 0.5, pos.z), 0.f, 0.f, 0.5f, combine_int3(max_pos.x + 1, max_pos.y + 1, max_pos.z), true);
+		float vbo = sqrt(vxbo * vxbo + vybo * vybo + vzbo * vzbo);
+
+		float vxr = trilerp(vortx, combine_float3(pos.x + 0.5, pos.y, pos.z), 0.5f, 0.f, 0.f, combine_int3(max_pos.x, max_pos.y + 1, max_pos.z + 1), true);
+		float vyr = trilerp(vorty, combine_float3(pos.x + 0.5, pos.y, pos.z), 0.f, 0.5f, 0.f, combine_int3(max_pos.x + 1, max_pos.y, max_pos.z + 1), true);
+		float vzr = trilerp(vortz, combine_float3(pos.x + 0.5, pos.y, pos.z), 0.f, 0.f, 0.5f, combine_int3(max_pos.x + 1, max_pos.y + 1, max_pos.z), true);
+		float vr = sqrt(vxr * vxr + vyr * vyr + vzr * vzr);
+
+		float vxl = trilerp(vortx, combine_float3(pos.x - 0.5, pos.y, pos.z), 0.5f, 0.f, 0.f, combine_int3(max_pos.x, max_pos.y + 1, max_pos.z + 1), true);
+		float vyl = trilerp(vorty, combine_float3(pos.x - 0.5, pos.y, pos.z), 0.f, 0.5f, 0.f, combine_int3(max_pos.x + 1, max_pos.y, max_pos.z + 1), true);
+		float vzl = trilerp(vortz, combine_float3(pos.x - 0.5, pos.y, pos.z), 0.f, 0.f, 0.5f, combine_int3(max_pos.x + 1, max_pos.y + 1, max_pos.z), true);
+		float vl = sqrt(vxl * vxl + vyl * vyl + vzl * vzl);
+
+		float vxf = trilerp(vortx, combine_float3(pos.x, pos.y, pos.z + 0.5), 0.5f, 0.f, 0.f, combine_int3(max_pos.x, max_pos.y + 1, max_pos.z + 1), true);
+		float vyf = trilerp(vorty, combine_float3(pos.x, pos.y, pos.z + 0.5), 0.f, 0.5f, 0.f, combine_int3(max_pos.x + 1, max_pos.y, max_pos.z + 1), true);
+		float vzf = trilerp(vortz, combine_float3(pos.x, pos.y, pos.z + 0.5), 0.f, 0.f, 0.5f, combine_int3(max_pos.x + 1, max_pos.y + 1, max_pos.z), true);
+		float vf = sqrt(vxf * vxf + vyf * vyf + vzf * vzf);
+
+		float vxbh = trilerp(vortx, combine_float3(pos.x, pos.y, pos.z - 0.5), 0.5f, 0.f, 0.f, combine_int3(max_pos.x, max_pos.y + 1, max_pos.z + 1), true);
+		float vybh = trilerp(vorty, combine_float3(pos.x, pos.y, pos.z - 0.5), 0.f, 0.5f, 0.f, combine_int3(max_pos.x + 1, max_pos.y, max_pos.z + 1), true);
+		float vzbh = trilerp(vortz, combine_float3(pos.x, pos.y, pos.z - 0.5), 0.f, 0.f, 0.5f, combine_int3(max_pos.x + 1, max_pos.y + 1, max_pos.z), true);
+		float vbh = sqrt(vxbh * vxbh + vybh * vybh + vzbh * vzbh);
+
+		float vxc = trilerp(vortx, combine_float3(pos.x, pos.y, pos.z), 0.5f, 0.f, 0.f, combine_int3(max_pos.x, max_pos.y + 1, max_pos.z + 1), true);
+		float vyc = trilerp(vorty, combine_float3(pos.x, pos.y, pos.z), 0.f, 0.5f, 0.f, combine_int3(max_pos.x + 1, max_pos.y, max_pos.z + 1), true);
+		float vzc = trilerp(vortz, combine_float3(pos.x, pos.y, pos.z), 0.f, 0.f, 0.5f, combine_int3(max_pos.x + 1, max_pos.y + 1, max_pos.z), true);
+
+		float nx = vr - vl;
+		float ny = vt - vbo;
+		float nz = vf - vbh;
+		float n = sqrt(nx * nx + ny * ny + nz * nz + 1e-5);
+		nx /= n;
+		ny /= n;
+		nz /= n;
+
+		if (dir == 1)
+			u[ind] += coeff * (ny * vzc - nz * vyc);
+		else if (dir == 2)
+			u[ind] += coeff * (nz * vxc - nx * vzc);
+		else if (dir == 3)
+			u[ind] += coeff * (nx * vyc - ny * vxc);
+	}
 }
 
 // reflect u = 2 * projected u - origin u
@@ -747,6 +880,9 @@ void Solver::InitCuda()
 	checkCudaErrors(cudaMalloc((void**)&f_pressure, nx * ny * nz * sizeof(float)));
 	checkCudaErrors(cudaMalloc((void**)&f_new_pressure, nx * ny * nz * sizeof(float)));
 	checkCudaErrors(cudaMalloc((void**)&f_div, nx * ny * nz * sizeof(float)));
+	checkCudaErrors(cudaMalloc((void**)&f_vortx, nx * (ny + 1) * (nz + 1) * sizeof(float)));
+	checkCudaErrors(cudaMalloc((void**)&f_vorty, (nx + 1) * ny * (nz + 1) * sizeof(float)));
+	checkCudaErrors(cudaMalloc((void**)&f_vortz, (nx + 1) * (ny + 1) * nz * sizeof(float)));
 	checkCudaErrors(cudaMalloc((void**)&r, mg_space * sizeof(float)));
 	checkCudaErrors(cudaMalloc((void**)&z, mg_space * sizeof(float)));
 	checkCudaErrors(cudaMalloc((void**)&p, nx * ny * nz * sizeof(float)));
@@ -776,6 +912,9 @@ void Solver::InitCuda()
 	checkCudaErrors(cudaMemset(f_pressure, 0, nx * ny * nz * sizeof(float)));
 	checkCudaErrors(cudaMemset(f_new_pressure, 0, nx * ny * nz * sizeof(float)));
 	checkCudaErrors(cudaMemset(f_div, 0, nx * ny * nz * sizeof(float)));
+	checkCudaErrors(cudaMemset(f_vortx, 0, nx * (ny + 1) * (nz + 1) * sizeof(float)));
+	checkCudaErrors(cudaMemset(f_vorty, 0, (nx + 1) * ny * (nz + 1) * sizeof(float)));
+	checkCudaErrors(cudaMemset(f_vortz, 0, (nx + 1) * (ny + 1) * nz * sizeof(float)));
 	checkCudaErrors(cudaMemset(r, 0, mg_space * sizeof(float)));
 	checkCudaErrors(cudaMemset(z, 0, mg_space * sizeof(float)));
 	checkCudaErrors(cudaMemset(p, 0, nx * ny * nz * sizeof(float)));
@@ -808,6 +947,9 @@ void Solver::FreeCuda()
 	checkCudaErrors(cudaFree(f_pressure));
 	checkCudaErrors(cudaFree(f_new_pressure));
 	checkCudaErrors(cudaFree(f_div));
+	checkCudaErrors(cudaFree(f_vortx));
+	checkCudaErrors(cudaFree(f_vorty));
+	checkCudaErrors(cudaFree(f_vortz));
 	checkCudaErrors(cudaFree(r));
 	checkCudaErrors(cudaFree(z));
 	checkCudaErrors(cudaFree(p));
@@ -842,10 +984,21 @@ void Solver::UpdateCuda()
 	max_pos.y = ny;
 	max_pos.z = nz;
 
-	// add force
-	ForceKernelUy << <dim3(ny + 1, nz), nx >> > (f_ux, f_uy, f_uz, f_temperature, dt, temperature_env, gravity, u, max_pos);
+	int3 max_pos_ux = max_pos;
+	max_pos_ux.x = nx + 1;
+	int3 max_pos_uy = max_pos;
+	max_pos_uy.y = ny + 1;
+	int3 max_pos_uz = max_pos;
+	max_pos_uz.z = nz + 1;
 	
+	FindVortx << <dim3(ny + 1, nz + 1), nx >> > (f_vortx, f_uy, f_uz, max_pos_uy, max_pos_uz);
+	FindVorty << <dim3(ny, nz + 1), nx + 1 >> > (f_vorty, f_ux, f_uz, max_pos_ux, max_pos_uz);
+	FindVortz << <dim3(ny + 1, nz), nx + 1 >> > (f_vortz, f_ux, f_uy, max_pos_ux, max_pos_uy);
 	Advect();
+	ForceKernelUy << <dim3(ny + 1, nz), nx >> > (f_ux, f_uy, f_uz, f_temperature, dt, temperature_env, gravity, u, max_pos);
+	ApplyVortConfiment << <dim3(ny, nz), nx + 1 >> > (f_ux, f_vortx, f_vorty, f_vortz, max_pos, 1, curl_strength);
+	ApplyVortConfiment << <dim3(ny + 1, nz), nx >> > (f_uy, f_vortx, f_vorty, f_vortz, max_pos, 2, curl_strength);
+	ApplyVortConfiment << <dim3(ny, nz + 1), nx >> > (f_uz, f_vortx, f_vorty, f_vortz, max_pos, 3, curl_strength);
 	Project();
 
 #if REFLECT
@@ -885,7 +1038,7 @@ void Solver::Initialize()
 	}
 
 	InitCuda();
-	//InitParam();
+	InitParam();
 }
 
 void Solver::Update()
@@ -919,8 +1072,8 @@ void Solver::Advect()
 	swap(&f_uy, &f_new_uy);
 	swap(&f_uz, &f_new_uz);
 	// temperature advection
-	//SemiLagKernel << <dim3(ny, nz), nx >> > (f_temperature, f_new_temperature, f_ux, f_uy, f_uz, dt, max_pos.x, max_pos.y, max_pos.z, 0);
-	//swap(&f_temperature, &f_new_temperature);
+	SemiLagKernel << <dim3(ny, nz), nx >> > (f_temperature, f_new_temperature, f_ux, f_uy, f_uz, dt, max_pos.x, max_pos.y, max_pos.z, 0);
+	swap(&f_temperature, &f_new_temperature);
 	// density advection
 	SemiLagKernel << <dim3(ny, nz), nx >> > (f_rho, f_new_rho, f_ux, f_uy, f_uz, dt, max_pos.x, max_pos.y, max_pos.z, 0);
 	swap(&f_rho, &f_new_rho);

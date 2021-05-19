@@ -103,6 +103,10 @@ private:
 	float* f_new_pressure;
 	// divergence field
 	float* f_div;
+	// vorticity, vortx means the plane whose normal points to x direction, same as vorty and vortz
+	float* f_vortx;
+	float* f_vorty;
+	float* f_vortz;
 	// conjugae variables
 	float* r;						// residual
 	float* z;						// M^-1 r
