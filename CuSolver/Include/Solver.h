@@ -31,10 +31,12 @@ public:
 
 	void Restrict(int offset, int max_pos_x, int max_pos_y, int max_pos_z);
 
-	void Conjugate();
+	void Conjugate(float* res, float* field);
 
 	// multi grid preconditioner, to make M^-1Ax = M^-1b which has a smaller condition number in order to accelerate rate of convergence
 	void MG_Preconditioner();
+
+	void PsiVCycle();
 
 	float* GetDensityField();
 
@@ -65,6 +67,7 @@ private:
 	float dt = 0;
 	// vorticity refinement coefficient
 	float curl_strength = 0;
+	float ivock_scale = 0.1;
 	// initial velocity
 	float vel_x = 0;
 	float vel_y = 0;
@@ -104,9 +107,16 @@ private:
 	// divergence field
 	float* f_div;
 	// vorticity, vortx means the plane whose normal points to x direction, same as vorty and vortz
+	// for conjugate convenience, we regard the dimension of f_vortx as nx*ny*nz, it is not right for the whole space, but we can wrap a layer around vort space
 	float* f_vortx;
 	float* f_vorty;
 	float* f_vortz;
+	float* f_new_vortx;
+	float* f_new_vorty;
+	float* f_new_vortz;
+	float* f_psix;
+	float* f_psiy;
+	float* f_psiz;
 	// conjugae variables
 	float* r;						// residual
 	float* z;						// M^-1 r

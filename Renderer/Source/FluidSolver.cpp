@@ -150,7 +150,7 @@ void FluidSolver::Render()
 	glEnableVertexAttribArray(0);
 
 	// fetch data from cu solver
-	Solver solver = Solver(Nx, Ny, Nz, 0.35f, 25.f, 20.f, 30, 0.1f, 0.2f, 0.f, 0.f, 0.f);
+	Solver solver = Solver(Nx, Ny, Nz, 0.25f, 35.f, 20.f, 30, 0.1f, 0.4f, 0.f, 0.f, 0.f);
 	solver.Initialize();
 	solver.Update();
 	// result to stack corruption, but data is right, ignore it now
@@ -205,12 +205,14 @@ void FluidSolver::Render()
 		glBindVertexArray(0);
 
 		//glDisable(GL_DEPTH_TEST);
-
-		// update density field
-		solver.Update();
-		rho = solver.GetDensityField();
-		glBindTexture(GL_TEXTURE_3D, densityTexture);
-		glTexImage3D(GL_TEXTURE_3D, 0, GL_R8, Nx, Ny, Nz, 0, GL_RED, GL_FLOAT, &rho[0]);
+		if (!bPause)
+		{
+			// update density field
+			solver.Update();
+			rho = solver.GetDensityField();
+			glBindTexture(GL_TEXTURE_3D, densityTexture);
+			glTexImage3D(GL_TEXTURE_3D, 0, GL_R8, Nx, Ny, Nz, 0, GL_RED, GL_FLOAT, &rho[0]);
+		}
 
 		// raymarching
 		shader.Use(raymarching);
@@ -305,8 +307,10 @@ void FluidSolver::ProcessInput(GLFWwindow *window)
 	if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
 		staticCamera.ProcessKeyboard(RIGHT, deltaTime);
 
-	if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS)
-		std::cout << "fuck" << std::endl;
+	if (glfwGetKey(window, GLFW_KEY_P) == GLFW_PRESS)
+		bPause = true;
+	if (glfwGetKey(window, GLFW_KEY_R) == GLFW_PRESS)
+		bPause = false;
 }
 
 void framebuffer_size_callback(GLFWwindow* window, int width, int height)

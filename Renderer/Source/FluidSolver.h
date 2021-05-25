@@ -34,6 +34,7 @@ public:
 	
 private:
 	GLFWwindow* window = nullptr;
+	bool bPause = false;
 
 	const unsigned int screenWidth = 1920;
 	const unsigned int screenHeight = 1080;
