@@ -127,23 +127,6 @@ private:
 
 	// temp variable, used for data transfer from device to host, the length of the array is one
 	float* d_temp_res;
-
-	// particle information
-	// note that the base world space coordinate in solver is (0, 0, 0)
-	// so that particle position can be converted to voxel space immediately
-	// mass
-	float* p_mass;
-	// position
-	float* p_px;
-	float* p_py;
-	float* p_pz;
-	// velocity
-	float* p_ux;
-	float* p_uy;
-	float* p_uz;
-	// when age equals 0, the particle is sleep
-	// otherwise the particle is generated and flow with smoke
-	float* p_age;
 	
 private:
 	// Host

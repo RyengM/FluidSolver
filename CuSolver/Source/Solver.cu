@@ -6,12 +6,9 @@
 
 #define MGPCG 1
 #define MACCORMACK 1
-#define REFLECT 0
-// 0: pure eulerian method, TODO. 1: PIC, 2: FLIP, 3: APIC
-// note that euler-lagrangian method is still in development, so only 0 is available
-#define ADVECT 0
-#define VORT_CONFINE 1
-#define IVOCK 1
+#define REFLECT 1
+#define VORT_CONFINE 0
+#define IVOCK 0
 
 /////////////////////////////
 //                         //
@@ -111,97 +108,6 @@ static __device__ float trilerp(float* field, float3 pos, float fpos_x, float fp
 	return lerp(lerp1, lerp2, fz);
 }
 
-////////////////////////////////////////////////////////////////////////////////////////////////////////////
-//      ----------
-//      |  |  |  |
-//      ----------
-//      |  | p|  |
-//      ----------
-//      |  |  |  |
-// base<----------
-// insert particle info into neibor 3x3 grids with b-spline importance sample
-// @field:		  grid to be inserted
-// @w_field:	  the weight of the attribute in that grid
-// @attribute:	  the attribute to be inserted
-// @particle_pos: particle position in grid index space, which is particle absolute position / grid stride
-// @index_offset: the offset in order to adapt staggered grid 
-// @max_pos:	  size of each dimension
-static __device__ void b_spline_p2g_insert(float* field, float* w_field, float attribute, float3 particle_pos, float3 index_offset, int3 max_pos)
-{
-	float3 particle_relative_pos = particle_pos - index_offset;
-
-	float3 base = floor(particle_relative_pos - combine_float3(0.5f, 0.5f, 0.5f));
-	float fx[3];
-	fx[0] = particle_relative_pos.x - base.x;
-	fx[1] = particle_relative_pos.y - base.y;
-	fx[2] = particle_relative_pos.z - base.z;
-
-	// grid b-spline weight
-	float w[3][3];
-	for (int i = 0; i < 3; ++i)
-	{
-		w[i][0] = 0.5 * pow((1.5 - fx[i]), 2);
-		w[i][1] = 0.75 - pow((fx[i] - 1.0), 2);
-		w[i][2] = 0.5 * pow((fx[i] - 0.5), 2);
-	}
-
-	//float3 pos = particle_relative_pos;
-	//int index = int(pos.x) + int(pos.y) * max_pos.x + int(pos.z) * max_pos.x * max_pos.y;
-	//field[index] += attribute;
-
-	for (int i = 0; i < 3; ++i)
-		for (int j = 0; j < 3; ++j)
-			for (int k = 0; k < 3; ++k)
-			{
-				float3 pos = base + combine_float3(i, j, k);
-				if (pos.x < 0 || pos.y < 0 || pos.z < 0)
-					continue;
-				int index = int(pos.x) + int(pos.y) * max_pos.x + int(pos.z) * max_pos.x * max_pos.y;
-				float weight = w[0][i] * w[1][j] * w[2][k];
-				atomicAdd(&field[index], weight * attribute);
-				atomicAdd(&w_field[index], weight);
-				/*field[index] += weight * attribute;
-				w_field[index] += weight;*/
-			}
-}
-
-// @ind:		index of particle
-// @attr:		the attribute to be modified
-static __device__ void b_spline_g2p_gathering(size_t ind, float* attr, float* field, float3 particle_pos, float3 index_offset, int3 max_pos)
-{
-	float3 particle_relative_pos = particle_pos - index_offset;
-
-	float3 base = floor(particle_relative_pos - combine_float3(0.5f, 0.5f, 0.5f));
-	float fx[3];
-	fx[0] = particle_relative_pos.x - base.x;
-	fx[1] = particle_relative_pos.y - base.y;
-	fx[2] = particle_relative_pos.z - base.z;
-
-	// grid b-spline weight
-	float w[3][3];
-	for (int i = 0; i < 3; ++i)
-	{
-		w[i][0] = 0.5 * pow((1.5 - fx[i]), 2);
-		w[i][1] = 0.75 - pow((fx[i] - 1.0), 2);
-		w[i][2] = 0.5 * pow((fx[i] - 0.5), 2);
-	}
-
-	attr[ind] = 0.f;
-
-	for (int i = 0; i < 3; ++i)
-		for (int j = 0; j < 3; ++j)
-			for (int k = 0; k < 3; ++k)
-			{
-				float3 pos = base + combine_float3(i, j, k);
-				if (pos.x < 0 || pos.y < 0 || pos.z < 0)
-					continue;
-				int index = int(pos.x) + int(pos.y) * max_pos.x + int(pos.z) * max_pos.x * max_pos.y;
-				float weight = w[0][i] * w[1][j] * w[2][k];
-				atomicAdd(&attr[ind], weight * field[index]);
-				//attr[ind] += weight * field[index];
-			}
-}
-
 // Runge-Kutta
 static __device__ float3 RK1(float* ux, float* uy, float* uz, float3 pos, float dt, int max_pos_x, int max_pos_y, int max_pos_z)
 {
@@ -247,17 +153,25 @@ static __device__ float3 RK4(float* ux, float* uy, float* uz, float3 pos, float 
 	u4.x = trilerp(ux, p3, 0.f, 0.5f, 0.5f, combine_int3(max_pos_x + 1, max_pos_y, max_pos_z), false);
 	u4.y = trilerp(uy, p3, 0.5f, 0.f, 0.5f, combine_int3(max_pos_x, max_pos_y + 1, max_pos_z), false);
 	u4.z = trilerp(uz, p3, 0.5f, 0.5f, 0.f, combine_int3(max_pos_x, max_pos_y, max_pos_z + 1), false);
-	pos = pos - dt * (u1 + 2.0 * u2 + 2.0 * u3 + u4) / 6.0;
-
-	return pos;
+	return pos - dt * (u1 + 2.0 * u2 + 2.0 * u3 + u4) / 6.0;
 }
 
 static __device__ float3 MacCormack(float* ux, float* uy, float* uz, float3 pos, float dt, int max_pos_x, int max_pos_y, int max_pos_z)
 {
 	float3 coord_predict = RK4(ux, uy, uz, pos, dt, max_pos_x, max_pos_y, max_pos_z);
-	float3 coord_reflect = RK4(ux, uy, uz, pos, -dt, max_pos_x, max_pos_y, max_pos_z);
+	float3 coord_reflect = RK4(ux, uy, uz, coord_predict, -dt, max_pos_x, max_pos_y, max_pos_z);
 
 	return coord_predict + (pos - coord_reflect) / 2.f;
+}
+
+static __device__ float3 BFECC(float* ux, float* uy, float* uz, float3 pos, float dt, int max_pos_x, int max_pos_y, int max_pos_z)
+{
+	float3 coord_predict = RK4(ux, uy, uz, pos, dt, max_pos_x, max_pos_y, max_pos_z);
+	float3 coord_reflect = RK4(ux, uy, uz, coord_predict, -dt, max_pos_x, max_pos_y, max_pos_z);
+
+	float3 coord_mid = pos + (pos - coord_reflect) / 2.f;
+
+	return RK4(ux, uy, uz, coord_mid, dt, max_pos_x, max_pos_y, max_pos_z);
 }
 
 void swap(float** a, float** b)
@@ -381,7 +295,7 @@ static __global__ void SourceKernel(float* rho, float* temperature, float rho0, 
 	size_t k = blockIdx.y;
 	size_t ind = i + j * blockDim.x + k * blockDim.x * gridDim.x;
 
-	if (pow((float(i) - float(blockDim.x / 2)), 2) + pow(float(j) - 25.0, 2) + pow((float(k) - float(gridDim.y / 2)), 2) <= 80)
+	if (pow((float(i) - float(blockDim.x / 2)), 2) + pow(float(j) - 10.0, 2) + pow((float(k) - float(gridDim.y / 2)), 2) <= 50)
 	{
 		rho[ind] = rho0;
 		temperature[ind] = temperature0;
@@ -800,97 +714,6 @@ static __global__ void VelocityReflect(float* r_u, float* u)
 	r_u[ind] = 2 * r_u[ind] - u[ind];
 }
 
-static __global__ void ParticleUpdateKernel(float* p_px, float* p_py, float* p_pz, float* p_mass, float* p_ux, float* p_uy, float* p_uz,
-	float* p_age, float3 source_pos, float dt, float source_radius, float threshold)
-{
-	size_t i = threadIdx.x;
-	size_t j = blockIdx.x;
-	size_t k = blockIdx.y;
-	size_t ind = i + j * blockDim.x + k * blockDim.x * gridDim.x;
-
-	// sleeping particles have chanced to be awaked
-	if (p_age[ind] == 0.f)
-	{
-		unsigned int seed0 = i;
-		unsigned int seed1 = j;
-		unsigned int seed2 = k;
-		unsigned int seed3 = ind;
-		// get chance
-		if (getRandom(&seed0, &seed1) < threshold)
-		{
-			p_mass[ind] = 0.01f;
-			p_age[ind] += 0.01f;
-			float theta = 2 * PI * getRandom(&seed1, &seed0);
-			float radius = source_radius * getRandom(&seed2, &seed0);
-			p_px[ind] = source_pos.x + radius * cos(theta);
-			p_py[ind] = source_pos.y;
-			p_pz[ind] = source_pos.z + radius * sin(theta);
-			p_uy[ind] = 1.f;
-		}
-	}
-	// update particle
-	else
-	{
-		p_px[ind] += p_ux[ind] * dt;
-		p_py[ind] += p_uy[ind] * dt;
-		p_pz[ind] += p_uz[ind] * dt;
-	}
-}
-
-// grid to particle
-static __global__ void G2P(float* p_px, float* p_py, float* p_pz, float* p_mass, float* p_ux, float* p_uy, float* p_uz, 
-	float grid_stride, float* rho, float* w_rho, float* ux, float* w_ux, float* uy, float* w_uy, float* uz, float* w_uz, int3 max_pos)
-{
-	size_t i = threadIdx.x;
-	size_t j = blockIdx.x;
-	size_t k = blockIdx.y;
-	size_t ind = i + j * blockDim.x + k * blockDim.x * gridDim.x;
-
-	float particle_pos_x = p_px[ind] / grid_stride;
-	float particle_pos_y = p_py[ind] / grid_stride;
-	float particle_pos_z = p_pz[ind] / grid_stride;
-
-	// density
-	b_spline_g2p_gathering(ind, p_mass, rho, combine_float3(particle_pos_x, particle_pos_y, particle_pos_z),
-		combine_float3(0.5f, 0.5f, 0.5f), max_pos);
-	// velocity
-	b_spline_g2p_gathering(ind, p_ux, ux, combine_float3(particle_pos_x, particle_pos_y, particle_pos_z),
-		combine_float3(0.f, 0.5f, 0.5f), max_pos);
-	b_spline_g2p_gathering(ind, p_uy, uy, combine_float3(particle_pos_x, particle_pos_y, particle_pos_z),
-		combine_float3(0.5f, 0.f, 0.5f), max_pos);
-	b_spline_g2p_gathering(ind, p_uz, uz, combine_float3(particle_pos_x, particle_pos_y, particle_pos_z),
-		combine_float3(0.5f, 0.5f, 0.f), max_pos);
-}
-
-// TODO. particles need to be re-sorted for reduce convenience
-// particle to grid
-static __global__ void P2G(float* p_px, float* p_py, float* p_pz, float* p_mass, float* p_age, float* p_ux, float* p_uy, float* p_uz,
-	float grid_stride, float* rho, float* w_rho, float* ux, float* w_ux, float* uy, float* w_uy, float* uz, float* w_uz, int3 max_pos)
-{
-	size_t i = threadIdx.x;
-	size_t j = blockIdx.x;
-	size_t k = blockIdx.y;
-	size_t ind = i + j * blockDim.x + k * blockDim.x * gridDim.x;
-
-	if (p_age[ind] == 0.f)
-		return;
-
-	float particle_pos_x = p_px[ind] / grid_stride;
-	float particle_pos_y = p_py[ind] / grid_stride;
-	float particle_pos_z = p_pz[ind] / grid_stride;
-
-	// density
-	b_spline_p2g_insert(rho, w_rho, p_mass[ind], combine_float3(particle_pos_x, particle_pos_y, particle_pos_z),
-		combine_float3(0.5f, 0.5f, 0.5f), max_pos);
-	// velocity
-	b_spline_p2g_insert(ux, w_ux, p_ux[ind], combine_float3(particle_pos_x, particle_pos_y, particle_pos_z),
-		combine_float3(0.f, 0.5f, 0.5f), max_pos);
-	b_spline_p2g_insert(uy, w_uy, p_uy[ind], combine_float3(particle_pos_x, particle_pos_y, particle_pos_z),
-		combine_float3(0.5f, 0.f, 0.5f), max_pos);
-	b_spline_p2g_insert(uz, w_uz, p_uz[ind], combine_float3(particle_pos_x, particle_pos_y, particle_pos_z),
-		combine_float3(0.5f, 0.5f, 0.f), max_pos);
-}
-
 // collocated attributes should be invoked once in order to reduce kernel invocation
 static __global__ void CollocatedWeightDivision(float* rho, float* w_rho)
 {
@@ -1054,14 +877,6 @@ void Solver::InitCuda()
 	checkCudaErrors(cudaMalloc((void**)&x, nx * ny * nz * sizeof(float)));
 	checkCudaErrors(cudaMalloc((void**)&temp, nx * ny * nz * sizeof(float)));
 	checkCudaErrors(cudaMalloc((void**)&d_temp_res, sizeof(float)));
-	checkCudaErrors(cudaMalloc((void**)&p_mass, 4 * nx * ny * nz * sizeof(float)));
-	checkCudaErrors(cudaMalloc((void**)&p_px, 4 * nx * ny * nz * sizeof(float)));
-	checkCudaErrors(cudaMalloc((void**)&p_py, 4 * nx * ny * nz * sizeof(float)));
-	checkCudaErrors(cudaMalloc((void**)&p_pz, 4 * nx * ny * nz * sizeof(float)));
-	checkCudaErrors(cudaMalloc((void**)&p_ux, 4 * nx * ny * nz * sizeof(float)));
-	checkCudaErrors(cudaMalloc((void**)&p_uy, 4 * nx * ny * nz * sizeof(float)));
-	checkCudaErrors(cudaMalloc((void**)&p_uz, 4 * nx * ny * nz * sizeof(float)));
-	checkCudaErrors(cudaMalloc((void**)&p_age, 4 * nx * ny * nz * sizeof(float)));
 
 	checkCudaErrors(cudaMemset(f_ux, 0, (nx + 1) * ny * nz * sizeof(float)));
 	checkCudaErrors(cudaMemset(f_uy, 0, nx * (ny + 1) * nz * sizeof(float)));
@@ -1092,14 +907,6 @@ void Solver::InitCuda()
 	checkCudaErrors(cudaMemset(x, 0, nx * ny * nz * sizeof(float)));
 	checkCudaErrors(cudaMemset(temp, 0, nx * ny * nz * sizeof(float)));
 	checkCudaErrors(cudaMemset(d_temp_res, 0, sizeof(float)));
-	checkCudaErrors(cudaMemset(p_mass, 0, sizeof(float)));
-	checkCudaErrors(cudaMemset(p_px, 0, sizeof(float)));
-	checkCudaErrors(cudaMemset(p_py, 0, sizeof(float)));
-	checkCudaErrors(cudaMemset(p_pz, 0, sizeof(float)));
-	checkCudaErrors(cudaMemset(p_ux, 0, sizeof(float)));
-	checkCudaErrors(cudaMemset(p_uy, 0, sizeof(float)));
-	checkCudaErrors(cudaMemset(p_uz, 0, sizeof(float)));
-	checkCudaErrors(cudaMemset(p_age, 0, sizeof(float)));
 }
 
 void Solver::FreeCuda()
@@ -1133,14 +940,6 @@ void Solver::FreeCuda()
 	checkCudaErrors(cudaFree(x));
 	checkCudaErrors(cudaFree(temp));
 	checkCudaErrors(cudaFree(d_temp_res));
-	checkCudaErrors(cudaFree(p_mass));
-	checkCudaErrors(cudaFree(p_px));
-	checkCudaErrors(cudaFree(p_py));
-	checkCudaErrors(cudaFree(p_pz));
-	checkCudaErrors(cudaFree(p_ux));
-	checkCudaErrors(cudaFree(p_uy));
-	checkCudaErrors(cudaFree(p_uz));
-	checkCudaErrors(cudaFree(p_age));
 }
 
 void Solver::InitParam()
@@ -1167,6 +966,11 @@ void Solver::UpdateCuda()
 	int3 max_pos_uz = max_pos;
 	max_pos_uz.z = nz + 1;
 
+	// add source
+	SourceKernel << <dim3(ny, nz), nx >> > (f_rho, f_temperature, rho, temperature, temperature_env);
+
+	ForceKernelUy << <dim3(ny + 1, nz), nx >> > (f_ux, f_uy, f_uz, f_temperature, dt, temperature_env, gravity, u, max_pos);
+
 #if VORT_CONFINE || IVOCK
 	// u -> ω
 	FindVortx << <dim3(ny, nz), nx >> > (f_vortx, f_uy, f_uz, max_pos_uy, max_pos_uz);
@@ -1181,8 +985,20 @@ void Solver::UpdateCuda()
 	SemiLagKernel << <dim3(ny, nz), nx >> > (f_vortz, f_new_vortz, f_ux, f_uy, f_uz, dt, max_pos.x, max_pos.y, max_pos.z, 6);
 #endif
 #endif
+	
+#if REFLECT		
+	// u -> u1/2*
+	SemiLagKernel << <dim3(ny, nz), nx + 1 >> > (f_ux, f_new_ux, f_ux, f_uy, f_uz, dt / 2.f, max_pos.x, max_pos.y, max_pos.z, 1);
+	SemiLagKernel << <dim3(ny + 1, nz), nx >> > (f_uy, f_new_uy, f_ux, f_uy, f_uz, dt / 2.f, max_pos.x, max_pos.y, max_pos.z, 2);
+	SemiLagKernel << <dim3(ny, nz + 1), nx >> > (f_uz, f_new_uz, f_ux, f_uy, f_uz, dt / 2.f, max_pos.x, max_pos.y, max_pos.z, 3);
+	// record u1/2*
+	CopyFrom << <dim3(ny, nz), nx + 1 >> > (f_ux, f_new_ux);
+	CopyFrom << <dim3(ny + 1, nz), nx >> > (f_uy, f_new_uy);
+	CopyFrom << <dim3(ny, nz + 1), nx >> > (f_uz, f_new_uz);
+#else
 	// u -> u*
 	Advect();
+#endif
 
 #if IVOCK
 	// u* -> ω*
@@ -1199,7 +1015,7 @@ void Solver::UpdateCuda()
 	ApplyVelocityzConfinement << <dim3(ny, nz + 1), nx >> > (f_uz, f_psix, f_psiy, max_pos, ivock_scale);
 #endif
 
-	ForceKernelUy << <dim3(ny + 1, nz), nx >> > (f_ux, f_uy, f_uz, f_temperature, dt, temperature_env, gravity, u, max_pos);
+	
 
 #if VORT_CONFINE
 	ApplyVortConfinement << <dim3(ny, nz), nx + 1 >> > (f_ux, f_vortx, f_vorty, f_vortz, max_pos, 1, curl_strength);
@@ -1209,20 +1025,28 @@ void Solver::UpdateCuda()
 	Project();
 
 #if REFLECT
-	// record old velocity, note that f_new_u is recorded value here
-	CopyFrom << <dim3(ny, nz), nx + 1 >> > (f_new_ux, f_ux);
-	CopyFrom << <dim3(ny + 1, nz), nx >> > (f_new_uy, f_uy);
-	CopyFrom << <dim3(ny, nz + 1), nx >> > (f_new_uz, f_uz);
 	// update velocity
 	ApplyGradientUx << <dim3(ny, nz), nx + 1 >> > (f_ux, f_pressure, max_pos);
 	ApplyGradientUy << <dim3(ny + 1, nz), nx >> > (f_uy, f_pressure, max_pos);
 	ApplyGradientUz << <dim3(ny, nz + 1), nx >> > (f_uz, f_pressure, max_pos);
-	// velocity reflect
+	// velocity reflect, u1/2^ = 2u1/2 - u1/2*
 	VelocityReflect << <dim3(ny, nz), nx + 1 >> > (f_ux, f_new_ux);
 	VelocityReflect << <dim3(ny + 1, nz), nx >> > (f_uy, f_new_uy);
 	VelocityReflect << <dim3(ny, nz + 1), nx >> > (f_uz, f_new_uz);
 
-	Advect();
+	// u1/2^ -> u1
+	SemiLagKernel << <dim3(ny, nz), nx + 1 >> > (f_ux, f_new_ux, f_ux, f_uy, f_uz, dt / 2.f, max_pos.x, max_pos.y, max_pos.z, 1);
+	SemiLagKernel << <dim3(ny + 1, nz), nx >> > (f_uy, f_new_uy, f_ux, f_uy, f_uz, dt / 2.f, max_pos.x, max_pos.y, max_pos.z, 2);
+	SemiLagKernel << <dim3(ny, nz + 1), nx >> > (f_uz, f_new_uz, f_ux, f_uy, f_uz, dt / 2.f, max_pos.x, max_pos.y, max_pos.z, 3);
+	swap(&f_ux, &f_new_ux);
+	swap(&f_uy, &f_new_uy);
+	swap(&f_uz, &f_new_uz);
+	// temperature advection
+	SemiLagKernel << <dim3(ny, nz), nx >> > (f_temperature, f_new_temperature, f_ux, f_uy, f_uz, dt, max_pos.x, max_pos.y, max_pos.z, 0);
+	swap(&f_temperature, &f_new_temperature);
+	// density advection
+	SemiLagKernel << <dim3(ny, nz), nx >> > (f_rho, f_new_rho, f_ux, f_uy, f_uz, dt, max_pos.x, max_pos.y, max_pos.z, 0);
+	swap(&f_rho, &f_new_rho);
 	Project();
 #endif
 
@@ -1268,7 +1092,6 @@ void Solver::Advect()
 	max_pos.y = ny;
 	max_pos.z = nz;
 
-#if ADVECT == 0					// pure lagrangian method
 	// add source
 	SourceKernel << <dim3(ny, nz), nx >> > (f_rho, f_temperature, rho, temperature, temperature_env);
 	// velocity advection
@@ -1284,27 +1107,6 @@ void Solver::Advect()
 	// density advection
 	SemiLagKernel << <dim3(ny, nz), nx >> > (f_rho, f_new_rho, f_ux, f_uy, f_uz, dt, max_pos.x, max_pos.y, max_pos.z, 0);
 	swap(&f_rho, &f_new_rho);
-
-#elif ADVECT == 1				// PIC
-	float3 source_pos;
-	source_pos.x = source_pos_x;
-	source_pos.y = source_pos_y;
-	source_pos.z = source_pos_z;
-
-	// particle born rate
-	threshold += 0.0001;
-	//G2P << <dim3(ny, nz * 2), nx * 2 >> > (p_px, p_py, p_pz, p_mass, p_ux, p_uy, p_uz, grid_stride, f_rho, f_new_rho,
-	//	f_ux, f_new_ux, f_uy, f_new_uy, f_uz, f_new_uz, max_pos);
-	ParticleUpdateKernel << <dim3(ny, nz * 2), nx * 2 >> > (p_px, p_py, p_pz, p_mass, p_ux, p_uy, p_uz, p_age, 
-		source_pos, dt, source_radius, threshold);
-	ResetGridValue();
-	P2G << <dim3(ny, nz * 2), nx * 2 >> > (p_px, p_py, p_pz, p_mass, p_age, p_ux, p_uy, p_uz, grid_stride, f_rho, f_new_rho,
-		f_ux, f_new_ux, f_uy, f_new_uy, f_uz, f_new_uz, max_pos);
-	//CollocatedWeightDivision << <dim3(ny, nz), nx >> > (f_rho, f_new_rho);
-	StaggeredWeightDivision << <dim3(ny, nz), nx + 1 >> > (f_ux, f_new_ux);
-	StaggeredWeightDivision << <dim3(ny + 1, nz), nx >> > (f_uy, f_new_uy);
-	StaggeredWeightDivision << <dim3(ny, nz + 1), nx >> > (f_uz, f_new_uz);
-#endif
 }
 
 // calc pressure
@@ -1415,7 +1217,7 @@ void Solver::Conjugate(float* res, float* field)
 		std::cout << "iter " << i << " rTr: " << rTr << std::endl;
 
 		// early stop
-		if (rTr < 1e-12 || rTr == 0)
+		if (rTr < 1e-8 || rTr == 0)
 			break;
 
 #if MGPCG
@@ -1435,8 +1237,8 @@ void Solver::Conjugate(float* res, float* field)
 		old_zTr = new_zTr;
 		last_rTr = rTr;
 	}
-
-	CopyFrom << <dim3(ny, nz), nx >> > (res, x);
+	swap(&res, &x);
+	//CopyFrom << <dim3(ny, nz), nx >> > (res, x);
 }
 
 void Solver::PsiVCycle()
@@ -1463,14 +1265,11 @@ void Solver::MG_Preconditioner()
 	size_t offset = 0;
 
 	// initialize z[l] and r[l] with 0 except r[0]
-	//Fill << <dim3(585, 16), 1024 >> > (z, 0);
-	//Fill << <dim3(73, 16), 1024 >> > (r + r_offset, 0);
-	//Fill << <dim3(585, 8), 1024 >> > (z, 0);
-	//Fill << <dim3(73, 8), 1024 >> > (r + r_offset, 0);
-	Fill << <dim3(585, 4), 1024 >> > (z, 0);
-	Fill << <dim3(73, 4), 1024 >> > (r + r_offset, 0);
-	//Fill << <dim3(585, 2), 1024 >> > (z, 0);
-	//Fill << <dim3(73, 2), 1024 >> > (r + r_offset, 0);
+	int blockSize = 1024;
+	int gridFullSize = mg_space / blockSize;
+	int gridResSize = (mg_space - r_offset) / blockSize;
+	Fill << < gridFullSize, 1024 >> > (z, 0);
+	Fill << < gridResSize, 1024 >> > (r + r_offset, 0);
 
 	// downsample
 	for (int l = 0; l < mg_level - 1; ++l)
