@@ -3,12 +3,16 @@
 #include "../Include/Solver.h"
 #include "../Include/Math.cuh"
 #include <device_launch_parameters.h>
+#include <curand.h>
+
+#pragma comment(lib, "curand.lib")
 
 #define MGPCG 1
 #define MACCORMACK 1
-#define REFLECT 1
-#define VORT_CONFINE 0
+#define REFLECT 0
+#define VORT_CONFINE 1
 #define IVOCK 0
+#define BURST 0
 
 /////////////////////////////
 //                         //
@@ -288,21 +292,58 @@ static __global__ void GridInitKernel(float* temperature, float temperature_env)
 	temperature[ind] = temperature_env;
 }
 
-static __global__ void SourceKernel(float* rho, float* temperature, float rho0, float temperature0, float temperature_env)
+static __global__ void SourceKernel(float source_x, float source_y, float source_z, float radius, float* rho, float* temperature, float rho0, float temperature0)
 {
 	size_t i = threadIdx.x;
 	size_t j = blockIdx.x;
 	size_t k = blockIdx.y;
 	size_t ind = i + j * blockDim.x + k * blockDim.x * gridDim.x;
 
-	if (pow((float(i) - float(blockDim.x / 2)), 2) + pow(float(j) - 10.0, 2) + pow((float(k) - float(gridDim.y / 2)), 2) <= 50)
+	if (pow((float(i) - source_x), 2) + pow(float(j) - source_y, 2) + pow((float(k) - source_z), 2) <= radius * radius)
 	{
 		rho[ind] = rho0;
 		temperature[ind] = temperature0;
 	}
 }
 
-static __global__ void ForceKernelUy(float* ux, float* uy, float* uz, float* f_temperature, float dt, float temperature_env, float gravity, float3 u0, int3 max_pos)
+static __global__ void BurstSourceKernel(float* pos_x, float* pos_y, float* pos_z, int p_num, float radius, float* rho, float* temperature, float rho0, float temperature0, float temperature_env, float density_decay, float temperature_decay)
+{
+	size_t i = threadIdx.x;
+	size_t j = blockIdx.x;
+	size_t k = blockIdx.y;
+	size_t ind = i + j * blockDim.x + k * blockDim.x * gridDim.x;
+
+	for (int p = 0; p < p_num; p++)
+	{
+		if (pow((float(i) - pos_x[p]), 2) + pow(float(j) - pos_y[p], 2) + pow((float(k) - pos_z[p]), 2) <= radius * radius)
+		{
+			rho[ind] = rho0;
+			temperature[ind] = temperature0;
+		}
+	}
+
+	rho[ind] *= density_decay;
+	temperature[ind] = (temperature[ind] - temperature_env) * temperature_decay + temperature_env;
+
+	// trick, prevent umbrella stay too long
+	if (j > gridDim.x - 20.f) rho[ind] *= 0.95f;
+}
+
+static __global__ void UpdateBurstSource(float* pos_x, float* pos_y, float* pos_z, float* vel_x, float* vel_y, float* vel_z, float vel_decay, float gravity, float dt)
+{
+	size_t i = threadIdx.x;
+
+	vel_y[i] -= gravity * dt * 0.05f;
+	vel_x[i] *= vel_decay;
+	vel_y[i] *= vel_decay;
+	vel_z[i] *= vel_decay;
+
+	pos_x[i] += vel_x[i] * dt;
+	pos_y[i] += vel_y[i] * dt;
+	pos_z[i] += vel_z[i] * dt;
+}
+
+static __global__ void ForceKernelUy(float* ux, float* uy, float* uz, float* f_density, float* f_temperature, float dt, float temperature_env, float gravity, int3 max_pos)
 {
 	size_t i = threadIdx.x;
 	size_t j = blockIdx.x;
@@ -320,6 +361,10 @@ static __global__ void ForceKernelUy(float* ux, float* uy, float* uz, float* f_t
 	float buoyancy = (temperature - temperature_env) * dt;
 
 	uy[ind] += buoyancy;
+
+#if BURST
+	uy[ind] -= gravity * 0.001f;
+#endif
 }
 
 static __global__ void SemiLagKernel(float* field, float* new_field, float* ux, float* uy, float* uz, float dt, int max_pos_x, int max_pos_y, int max_pos_z, int dir)
@@ -352,7 +397,7 @@ static __global__ void SemiLagKernel(float* field, float* new_field, float* ux, 
 #endif
 	if (dir >= 0 && dir < 4)
 		new_field[ind] = trilerp(field, coord, dir == 1 ? 0.f : 0.5f, dir == 2 ? 0.f : 0.5f, dir == 3 ? 0.f : 0.5f,
-			combine_int3(dir == 1 ? (max_pos_x + 1) : max_pos_x, dir == 2 ? (max_pos_y + 1) : max_pos_y, dir == 3 ? (max_pos_z + 1) : max_pos_z), dir == 0 ? true : false);
+			combine_int3(dir == 1 ? (max_pos_x + 1) : max_pos_x, dir == 2 ? (max_pos_y + 1) : max_pos_y, dir == 3 ? (max_pos_z + 1) : max_pos_z), false);
 	else
 		new_field[ind] = trilerp(field, coord, dir == 4 ? 0.5f : 0.f, dir == 5 ? 0.5f : 0.f, dir == 6 ? 0.5f : 0.f, combine_int3(max_pos_x, max_pos_y, max_pos_z), false);
 }
@@ -444,15 +489,10 @@ static __global__ void FindVortx(float* vortx, float* uy, float* uz, int3 max_po
 	size_t k = blockIdx.y;
 	size_t ind = i + j * blockDim.x + k * blockDim.x * gridDim.x;
 
-	float3 pos;
-	pos.x = float(i) + 0.5f;
-	pos.y = float(j);
-	pos.z = float(k);
-
-	float ubh = trilerp(uy, combine_float3(pos.x, pos.y, pos.z - 0.5f), 0.5f, 0.f, 0.5f, max_pos_uy, true);
-	float uf = trilerp(uy, combine_float3(pos.x, pos.y, pos.z + 0.5f), 0.5f, 0.f, 0.5f, max_pos_uy, true);
-	float ubo = trilerp(uz, combine_float3(pos.x, pos.y - 0.5f, pos.z), 0.5f, 0.5f, 0.f, max_pos_uz, true);
-	float ut = trilerp(uz, combine_float3(pos.x, pos.y + 0.5f, pos.z), 0.5f, 0.5f, 0.f, max_pos_uz, true);
+	float ubh = sample(uy, combine_int3(i, j, k - 1), max_pos_uy);
+	float uf = sample(uy, combine_int3(i, j, k), max_pos_uy);
+	float ubo = sample(uz, combine_int3(i, j - 1, k), max_pos_uz);
+	float ut = sample(uz, combine_int3(i, j, k), max_pos_uz);
 	vortx[ind] = uf - ubh - ut + ubo;
 }
 
@@ -463,15 +503,10 @@ static __global__ void FindVorty(float* vorty, float* ux, float* uz, int3 max_po
 	size_t k = blockIdx.y;
 	size_t ind = i + j * blockDim.x + k * blockDim.x * gridDim.x;
 
-	float3 pos;
-	pos.x = float(i);
-	pos.y = float(j) + 0.5f;
-	pos.z = float(k);
-
-	float ul = trilerp(uz, combine_float3(pos.x - 0.5f, pos.y, pos.z), 0.5f, 0.5f, 0.f, max_pos_uz, true);
-	float ur = trilerp(uz, combine_float3(pos.x + 0.5f, pos.y, pos.z), 0.5f, 0.5f, 0.f, max_pos_uz, true);
-	float ubh = trilerp(ux, combine_float3(pos.x, pos.y, pos.z - 0.5f), 0.f, 0.5f, 0.5f, max_pos_uz, true);
-	float uf = trilerp(ux, combine_float3(pos.x, pos.y, pos.z + 0.5f), 0.f, 0.5f, 0.5f, max_pos_uz, true);
+	float ul = sample(uz, combine_int3(i - 1, j, k), max_pos_uz);
+	float ur = sample(uz, combine_int3(i, j, k), max_pos_uz);
+	float ubh = sample(ux, combine_int3(i, j, k - 1), max_pos_ux);
+	float uf = sample(ux, combine_int3(i, j, k), max_pos_ux);
 	vorty[ind] = ur - ul - uf + ubh;
 }
 
@@ -482,15 +517,10 @@ static __global__ void FindVortz(float* vortz, float* ux, float* uy, int3 max_po
 	size_t k = blockIdx.y;
 	size_t ind = i + j * blockDim.x + k * blockDim.x * gridDim.x;
 
-	float3 pos;
-	pos.x = float(i);
-	pos.y = float(j);
-	pos.z = float(k) + 0.5f;
-
-	float ul = trilerp(uy, combine_float3(pos.x - 0.5f, pos.y, pos.z), 0.5f, 0.f, 0.5f, max_pos_uy, true);
-	float ur = trilerp(uy, combine_float3(pos.x + 0.5f, pos.y, pos.z), 0.5f, 0.f, 0.5f, max_pos_uy, true);
-	float ubo = trilerp(ux, combine_float3(pos.x - 0.5f, pos.y, pos.z), 0.f, 0.5f, 0.5f, max_pos_ux, true);
-	float ut = trilerp(ux, combine_float3(pos.x + 0.5f, pos.y, pos.z), 0.f, 0.5f, 0.5f, max_pos_ux, true);
+	float ul = sample(uy, combine_int3(i - 1, j, k), max_pos_uy);
+	float ur = sample(uy, combine_int3(i, j, k), max_pos_uy);
+	float ubo = sample(ux, combine_int3(i, j - 1, k), max_pos_ux);
+	float ut = sample(ux, combine_int3(i, j, k), max_pos_ux);
 	vortz[ind] = ut - ubo - ur + ul;
 }
 
@@ -877,6 +907,12 @@ void Solver::InitCuda()
 	checkCudaErrors(cudaMalloc((void**)&x, nx * ny * nz * sizeof(float)));
 	checkCudaErrors(cudaMalloc((void**)&temp, nx * ny * nz * sizeof(float)));
 	checkCudaErrors(cudaMalloc((void**)&d_temp_res, sizeof(float)));
+	checkCudaErrors(cudaMalloc((void**)&p_posx, particle_num * sizeof(float)));
+	checkCudaErrors(cudaMalloc((void**)&p_posy, particle_num * sizeof(float)));
+	checkCudaErrors(cudaMalloc((void**)&p_posz, particle_num * sizeof(float)));
+	checkCudaErrors(cudaMalloc((void**)&p_velx, particle_num * sizeof(float)));
+	checkCudaErrors(cudaMalloc((void**)&p_vely, particle_num * sizeof(float)));
+	checkCudaErrors(cudaMalloc((void**)&p_velz, particle_num * sizeof(float)));
 
 	checkCudaErrors(cudaMemset(f_ux, 0, (nx + 1) * ny * nz * sizeof(float)));
 	checkCudaErrors(cudaMemset(f_uy, 0, nx * (ny + 1) * nz * sizeof(float)));
@@ -907,6 +943,12 @@ void Solver::InitCuda()
 	checkCudaErrors(cudaMemset(x, 0, nx * ny * nz * sizeof(float)));
 	checkCudaErrors(cudaMemset(temp, 0, nx * ny * nz * sizeof(float)));
 	checkCudaErrors(cudaMemset(d_temp_res, 0, sizeof(float)));
+	checkCudaErrors(cudaMemset(p_posx, 0, particle_num * sizeof(float)));
+	checkCudaErrors(cudaMemset(p_posy, 0, particle_num * sizeof(float)));
+	checkCudaErrors(cudaMemset(p_posz, 0, particle_num * sizeof(float)));
+	checkCudaErrors(cudaMemset(p_velx, 0, particle_num * sizeof(float)));
+	checkCudaErrors(cudaMemset(p_vely, 0, particle_num * sizeof(float)));
+	checkCudaErrors(cudaMemset(p_velz, 0, particle_num * sizeof(float)));
 }
 
 void Solver::FreeCuda()
@@ -940,20 +982,32 @@ void Solver::FreeCuda()
 	checkCudaErrors(cudaFree(x));
 	checkCudaErrors(cudaFree(temp));
 	checkCudaErrors(cudaFree(d_temp_res));
+	checkCudaErrors(cudaFree(p_posx));
+	checkCudaErrors(cudaFree(p_posy));
+	checkCudaErrors(cudaFree(p_posz));
+	checkCudaErrors(cudaFree(p_velx));
+	checkCudaErrors(cudaFree(p_vely));
+	checkCudaErrors(cudaFree(p_velz));
 }
 
 void Solver::InitParam()
 {
 	GridInitKernel << <dim3(ny, nz), nx >> > (f_temperature, temperature_env);
+
+#if BURST
+	curandGenerator_t gen;
+	curandStatus_t status = curandCreateGenerator(&gen, CURAND_RNG_PSEUDO_XORWOW);
+	curandGenerateNormal(gen, p_posx, particle_num, burst_pos_x, init_normal_radius);
+	curandGenerateNormal(gen, p_posy, particle_num, burst_pos_y, init_normal_radius);
+	curandGenerateNormal(gen, p_posz, particle_num, burst_pos_z, init_normal_radius);
+	curandGenerateNormal(gen, p_velx, particle_num, 0.f, init_normal_velocity);
+	curandGenerateNormal(gen, p_vely, particle_num, 0.f, init_normal_velocity);
+	curandGenerateNormal(gen, p_velz, particle_num, 0.f, init_normal_velocity);
+#endif
 }
 
 void Solver::UpdateCuda()
 {
-	float3 u;
-	u.x = vel_x;
-	u.y = vel_y;
-	u.z = vel_z;
-
 	int3 max_pos;
 	max_pos.x = nx;
 	max_pos.y = ny;
@@ -967,9 +1021,14 @@ void Solver::UpdateCuda()
 	max_pos_uz.z = nz + 1;
 
 	// add source
-	SourceKernel << <dim3(ny, nz), nx >> > (f_rho, f_temperature, rho, temperature, temperature_env);
+#if BURST
+	BurstSourceKernel << <dim3(ny, nz), nx >> > (p_posx, p_posy, p_posz, particle_num, particle_radius, f_rho, f_temperature, rho, temperature, temperature_env, density_decay, temperature_decay);
+	UpdateBurstSource << <dim3(1, 1), particle_num >> > (p_posx, p_posy, p_posz, p_velx, p_vely, p_velz, vel_decay, gravity, dt);
+#else
+	SourceKernel << <dim3(ny, nz), nx >> > (source_pos_x, source_pos_y, source_pos_z, source_radius, f_rho, f_temperature, rho, temperature);
+#endif
 
-	ForceKernelUy << <dim3(ny + 1, nz), nx >> > (f_ux, f_uy, f_uz, f_temperature, dt, temperature_env, gravity, u, max_pos);
+	ForceKernelUy << <dim3(ny + 1, nz), nx >> > (f_ux, f_uy, f_uz, f_rho, f_temperature, dt, temperature_env, gravity, max_pos);
 
 #if VORT_CONFINE || IVOCK
 	// u -> ω
@@ -1014,8 +1073,6 @@ void Solver::UpdateCuda()
 	ApplyVelocityyConfinement << <dim3(ny + 1, nz), nx >> > (f_uy, f_psix, f_psiz, max_pos, ivock_scale);
 	ApplyVelocityzConfinement << <dim3(ny, nz + 1), nx >> > (f_uz, f_psix, f_psiy, max_pos, ivock_scale);
 #endif
-
-	
 
 #if VORT_CONFINE
 	ApplyVortConfinement << <dim3(ny, nz), nx + 1 >> > (f_ux, f_vortx, f_vorty, f_vortz, max_pos, 1, curl_strength);
@@ -1092,8 +1149,6 @@ void Solver::Advect()
 	max_pos.y = ny;
 	max_pos.z = nz;
 
-	// add source
-	SourceKernel << <dim3(ny, nz), nx >> > (f_rho, f_temperature, rho, temperature, temperature_env);
 	// velocity advection
 	SemiLagKernel << <dim3(ny, nz), nx + 1 >> > (f_ux, f_new_ux, f_ux, f_uy, f_uz, dt, max_pos.x, max_pos.y, max_pos.z, 1);
 	SemiLagKernel << <dim3(ny + 1, nz), nx >> > (f_uy, f_new_uy, f_ux, f_uy, f_uz, dt, max_pos.x, max_pos.y, max_pos.z, 2);
@@ -1217,7 +1272,7 @@ void Solver::Conjugate(float* res, float* field)
 		std::cout << "iter " << i << " rTr: " << rTr << std::endl;
 
 		// early stop
-		if (rTr < 1e-8 || rTr == 0)
+		if (rTr < iter_precision || rTr == 0)
 			break;
 
 #if MGPCG

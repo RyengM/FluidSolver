@@ -10,7 +10,6 @@
 #include "Shader.h"
 #include "FluidSolver.h"
 
-#include <Solver.h>
 #include <memory>
 
 Camera staticCamera;
@@ -150,7 +149,7 @@ void FluidSolver::Render()
 	glEnableVertexAttribArray(0);
 
 	// fetch data from cu solver
-	Solver solver = Solver(Nx, Ny, Nz, 0.25f, 35.f, 20.f, 30, 0.1f, 0.4f, 0.f, 0.f, 0.f);
+	Solver solver = Solver();
 	solver.Initialize();
 	solver.Update();
 	// result to stack corruption, but data is right, ignore it now
@@ -191,7 +190,7 @@ void FluidSolver::Render()
 		//glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
 		
 		glm::mat4 model = glm::mat4(1.0f);
-		model = glm::scale(model, glm::vec3(2, 10, 2));
+		model = glm::scale(model, glm::vec3(Nx / 32, Ny / 32, Nz / 32));
 		glm::mat4 view = staticCamera.GetViewMatrix();
 		glm::mat4 projection = glm::perspective(glm::radians(staticCamera.fov), (float)screenWidth / (float)screenHeight, staticCamera.nearPlane, staticCamera.farPlane);
 		// draw boundingbox
@@ -204,7 +203,7 @@ void FluidSolver::Render()
 		glDrawArrays(GL_LINES, 10, 8);
 		glBindVertexArray(0);
 
-		//glDisable(GL_DEPTH_TEST);
+		glDisable(GL_DEPTH_TEST);
 		if (!bPause)
 		{
 			// update density field

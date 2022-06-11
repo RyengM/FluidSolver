@@ -6,11 +6,14 @@
 #define SOLVER_API _declspec(dllimport)
 #endif
 
+#define Nx 64
+#define Ny 128
+#define Nz 64
+
 class SOLVER_API Solver
 {
 public:
-	Solver(int nx, int ny, int nz, float rho, float temperature, float temperature_env, int max_iter, float dt, float curl_strength, float vel_x, float vel_y, float vel_z) :
-		nx(nx), ny(ny), nz(nz), rho(rho), temperature(temperature), temperature_env(temperature_env), max_iter(max_iter), dt(dt), curl_strength(curl_strength), vel_x(vel_x), vel_y(vel_y), vel_z(vel_z) {};
+	Solver() {};
 	
 	~Solver();
 
@@ -52,40 +55,51 @@ private:
 
 private:
 	// grid size
-	int nx = 0;
-	int ny = 0;
-	int nz = 0;
+	int nx = Nx;
+	int ny = Ny;
+	int nz = Nz;
 	// initial density
-	float rho = 0;
+	float rho = 0.1f;
 	// initial tempture
-	float temperature = 0;
-	float temperature_env = 0;
+	float temperature = 2.f;
+	float temperature_env = 0.f;
 	// gravity
 	float gravity = 9.8f;
-	int max_iter = 0;
+	int max_iter = 30;
+	float iter_precision = 1e-3;
 	// time step
-	float dt = 0;
+	float dt = 0.2f;
 	// vorticity refinement coefficient
-	float curl_strength = 0;
-	float ivock_scale = 0.1;
-	// initial velocity
-	float vel_x = 0;
-	float vel_y = 0;
-	float vel_z = 0;
+	float curl_strength = 0.1f;
+	float ivock_scale = 0.1f;
 	// frame
 	int current_frame = 0;
-	// grid stride, used for converting particle from world space to grid index space
-	float grid_stride = 0.1f;
-	// source param
-	float source_pos_x = 3.2f;
-	float source_pos_y = 0.f;
-	float source_pos_z = 3.2f;
-	float source_radius = 1.0f;
-	// the probability of particle awake
-	float threshold = 0.f;
+	// rising smoke source param
+	float source_pos_x = Nx / 2.f;
+	float source_pos_y = 10.f;
+	float source_pos_z = Nz / 2.f;
+	float source_radius = 7.0f;
+	// burst source param
+	int particle_num = 128;
+	float init_normal_radius = 3.f;     // normally distributed particle init position radius
+	float init_normal_velocity = 2.f;   // normally distributed particle init velocity radius
+	float burst_pos_x = Nx / 2.f;
+	float burst_pos_y = Ny - 50.f;
+	float burst_pos_z = Nz / 2.f;
+	float particle_radius = 2.0f;
+	float vel_decay = 0.99f;
+	float density_decay = 0.99f;
+	float temperature_decay = 0.8f;
 
 private:
 	// Device
+	// burst particle
+	float* p_posx;
+	float* p_posy;
+	float* p_posz;
+	float* p_velx;
+	float* p_vely;
+	float* p_velz;
 	// velocity field
 	float* f_ux;
 	float* f_uy;

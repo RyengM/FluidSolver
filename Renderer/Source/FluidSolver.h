@@ -2,12 +2,10 @@
 #include <GLFW/glfw3.h>
 #include <vector>
 
+#include <Solver.h>
 #include "Camera.h"
 #include "Objects.h"
 
-#define Nx 64
-#define Ny 512
-#define Nz 64
 #define GRIDSTRIDE 0.02
 
 // actually a scene to manage the objects in it, especially for fluids
